@@ -1,0 +1,6 @@
+{
+  "name": "ND PDF Tools",
+  "description": "An all-in-one suite of PDF tools: compress files, delete or reorganize pages, crop, annotate, and export custom documents.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
