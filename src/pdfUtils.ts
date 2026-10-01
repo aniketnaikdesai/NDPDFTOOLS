@@ -93,20 +93,75 @@ export async function renderPageThumbnail(
   context.fillRect(0, 0, canvas.width, canvas.height);
 
   if (crop) {
-    const cropX = crop.x * canvas.width;
-    const cropY = crop.y * canvas.height;
-    const cropW = crop.width * canvas.width;
-    const cropH = crop.height * canvas.height;
-    context.beginPath();
-    context.rect(cropX, cropY, cropW, cropH);
-    context.clip();
-  }
+    if (crop.placement === 'fit' || crop.placement === 'trim-page') {
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = thumbViewport.width;
+      tempCanvas.height = thumbViewport.height;
+      const tempCtx = tempCanvas.getContext('2d')!;
+      tempCtx.fillStyle = '#FFFFFF';
+      tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+      await page.render({
+        canvasContext: tempCtx,
+        viewport: thumbViewport,
+        canvas: tempCanvas,
+      } as any).promise;
 
-  await page.render({
-    canvasContext: context,
-    viewport: thumbViewport,
-    canvas: canvas,
-  } as any).promise;
+      const sx = crop.x * tempCanvas.width;
+      const sy = crop.y * tempCanvas.height;
+      const sw = crop.width * tempCanvas.width;
+      const sh = crop.height * tempCanvas.height;
+
+      const scaleFit = Math.min(canvas.width / sw, canvas.height / sh);
+      const dw = sw * scaleFit;
+      const dh = sh * scaleFit;
+      const dx = (canvas.width - dw) / 2;
+      const dy = (canvas.height - dh) / 2;
+
+      context.drawImage(tempCanvas, sx, sy, sw, sh, dx, dy, dw, dh);
+    } else if (crop.placement === 'align-top') {
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = thumbViewport.width;
+      tempCanvas.height = thumbViewport.height;
+      const tempCtx = tempCanvas.getContext('2d')!;
+      tempCtx.fillStyle = '#FFFFFF';
+      tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+      await page.render({
+        canvasContext: tempCtx,
+        viewport: thumbViewport,
+        canvas: tempCanvas,
+      } as any).promise;
+
+      const sx = crop.x * tempCanvas.width;
+      const sy = crop.y * tempCanvas.height;
+      const sw = crop.width * tempCanvas.width;
+      const sh = crop.height * tempCanvas.height;
+
+      const dx = (canvas.width - sw) / 2;
+      const dy = 0;
+
+      context.drawImage(tempCanvas, sx, sy, sw, sh, dx, dy, sw, sh);
+    } else {
+      const cropX = crop.x * canvas.width;
+      const cropY = crop.y * canvas.height;
+      const cropW = crop.width * canvas.width;
+      const cropH = crop.height * canvas.height;
+      context.beginPath();
+      context.rect(cropX, cropY, cropW, cropH);
+      context.clip();
+
+      await page.render({
+        canvasContext: context,
+        viewport: thumbViewport,
+        canvas: canvas,
+      } as any).promise;
+    }
+  } else {
+    await page.render({
+      canvasContext: context,
+      viewport: thumbViewport,
+      canvas: canvas,
+    } as any).promise;
+  }
 
   const url = canvas.toDataURL('image/jpeg', 0.8);
   
@@ -428,21 +483,91 @@ export async function compilePdf(
         context.fillStyle = '#FFFFFF';
         context.fillRect(0, 0, canvas.width, canvas.height);
 
-        if (pageItem.crop) {
-          const cropX = pageItem.crop.x * canvas.width;
-          const cropY = pageItem.crop.y * canvas.height;
-          const cropW = pageItem.crop.width * canvas.width;
-          const cropH = pageItem.crop.height * canvas.height;
-          context.beginPath();
-          context.rect(cropX, cropY, cropW, cropH);
-          context.clip();
-        }
+        if (pageItem.crop && pageItem.crop.placement === 'fit') {
+          const tempCanvas = document.createElement('canvas');
+          tempCanvas.width = viewport.width;
+          tempCanvas.height = viewport.height;
+          const tempCtx = tempCanvas.getContext('2d')!;
+          tempCtx.fillStyle = '#FFFFFF';
+          tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+          await page.render({
+            canvasContext: tempCtx,
+            viewport: viewport,
+            canvas: tempCanvas,
+          } as any).promise;
 
-        await page.render({
-          canvasContext: context,
-          viewport: viewport,
-          canvas: canvas,
-        } as any).promise;
+          const sx = pageItem.crop.x * viewport.width;
+          const sy = pageItem.crop.y * viewport.height;
+          const sw = pageItem.crop.width * viewport.width;
+          const sh = pageItem.crop.height * viewport.height;
+
+          const scaleFit = Math.min(canvas.width / sw, canvas.height / sh);
+          const dw = sw * scaleFit;
+          const dh = sh * scaleFit;
+          const dx = (canvas.width - dw) / 2;
+          const dy = (canvas.height - dh) / 2;
+
+          context.drawImage(tempCanvas, sx, sy, sw, sh, dx, dy, dw, dh);
+        } else if (pageItem.crop && pageItem.crop.placement === 'trim-page') {
+          const tempCanvas = document.createElement('canvas');
+          tempCanvas.width = viewport.width;
+          tempCanvas.height = viewport.height;
+          const tempCtx = tempCanvas.getContext('2d')!;
+          tempCtx.fillStyle = '#FFFFFF';
+          tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+          await page.render({
+            canvasContext: tempCtx,
+            viewport: viewport,
+            canvas: tempCanvas,
+          } as any).promise;
+
+          const sx = pageItem.crop.x * viewport.width;
+          const sy = pageItem.crop.y * viewport.height;
+          const sw = pageItem.crop.width * viewport.width;
+          const sh = pageItem.crop.height * viewport.height;
+
+          canvas.width = sw;
+          canvas.height = sh;
+          context.drawImage(tempCanvas, sx, sy, sw, sh, 0, 0, sw, sh);
+        } else if (pageItem.crop && pageItem.crop.placement === 'align-top') {
+          const tempCanvas = document.createElement('canvas');
+          tempCanvas.width = viewport.width;
+          tempCanvas.height = viewport.height;
+          const tempCtx = tempCanvas.getContext('2d')!;
+          tempCtx.fillStyle = '#FFFFFF';
+          tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+          await page.render({
+            canvasContext: tempCtx,
+            viewport: viewport,
+            canvas: tempCanvas,
+          } as any).promise;
+
+          const sx = pageItem.crop.x * viewport.width;
+          const sy = pageItem.crop.y * viewport.height;
+          const sw = pageItem.crop.width * viewport.width;
+          const sh = pageItem.crop.height * viewport.height;
+
+          const dx = (canvas.width - sw) / 2;
+          const dy = 0;
+
+          context.drawImage(tempCanvas, sx, sy, sw, sh, dx, dy, sw, sh);
+        } else {
+          if (pageItem.crop) {
+            const cropX = pageItem.crop.x * canvas.width;
+            const cropY = pageItem.crop.y * canvas.height;
+            const cropW = pageItem.crop.width * canvas.width;
+            const cropH = pageItem.crop.height * canvas.height;
+            context.beginPath();
+            context.rect(cropX, cropY, cropW, cropH);
+            context.clip();
+          }
+
+          await page.render({
+            canvasContext: context,
+            viewport: viewport,
+            canvas: canvas,
+          } as any).promise;
+        }
 
         const jpegDataUrl = canvas.toDataURL('image/jpeg', settings.imageQuality);
         const base64Data = jpegDataUrl.split(',')[1];
@@ -451,9 +576,9 @@ export async function compilePdf(
         const img = await destPdf.embedJpg(imgBytes);
 
         // Calculate original width/height depending on page orientation
-        // PDFJS pre-rotates the viewport, but we can stick to original width/height values
-        const originalWidth = pageItem.width;
-        const originalHeight = pageItem.height;
+        const isTrimmed = pageItem.crop && pageItem.crop.placement === 'trim-page';
+        const originalWidth = isTrimmed ? (pageItem.width * pageItem.crop!.width) : pageItem.width;
+        const originalHeight = isTrimmed ? (pageItem.height * pageItem.crop!.height) : pageItem.height;
 
         const newPage = destPdf.addPage([originalWidth, originalHeight]);
         
@@ -504,20 +629,52 @@ export async function compilePdf(
         copiedPage.setCropBox(pdfX, pdfY, pdfW, pdfH);
         
         const embeddedPage = await destPdf.embedPage(copiedPage);
-        const newPage = destPdf.addPage([originalWidth, originalHeight]);
-        
-        newPage.drawPage(embeddedPage, {
-          x: pdfX,
-          y: pdfY,
-          width: pdfW,
-          height: pdfH,
-        });
-        
-        if (pageItem.rotation !== 0) {
-          const currentRotation = copiedPage.getRotation().angle;
-          newPage.setRotation(degrees((currentRotation + pageItem.rotation) % 360));
+
+        if (pageItem.crop.placement === 'trim-page') {
+          const newPage = destPdf.addPage([pdfW, pdfH]);
+          newPage.drawPage(embeddedPage, {
+            x: 0,
+            y: 0,
+            width: pdfW,
+            height: pdfH,
+          });
+          if (pageItem.rotation !== 0) {
+            const currentRotation = copiedPage.getRotation().angle;
+            newPage.setRotation(degrees((currentRotation + pageItem.rotation) % 360));
+          }
+          await drawDecorations(newPage, destPdf, pageItem);
+        } else {
+          const newPage = destPdf.addPage([originalWidth, originalHeight]);
+          
+          let drawX = pdfX;
+          let drawY = pdfY;
+          let drawW = pdfW;
+          let drawH = pdfH;
+
+          if (pageItem.crop.placement === 'fit') {
+            const scaleFit = Math.min(originalWidth / pdfW, originalHeight / pdfH);
+            drawW = pdfW * scaleFit;
+            drawH = pdfH * scaleFit;
+            drawX = (originalWidth - drawW) / 2;
+            drawY = (originalHeight - drawH) / 2;
+          } else if (pageItem.crop.placement === 'align-top') {
+            drawX = (originalWidth - pdfW) / 2;
+            drawY = originalHeight - pdfH; // Top edge in PDF coordinate system
+          }
+
+          newPage.drawPage(embeddedPage, {
+            x: drawX,
+            y: drawY,
+            width: drawW,
+            height: drawH,
+          });
+          
+          if (pageItem.rotation !== 0) {
+            const currentRotation = copiedPage.getRotation().angle;
+            newPage.setRotation(degrees((currentRotation + pageItem.rotation) % 360));
+          }
+          await drawDecorations(newPage, destPdf, pageItem);
         }
-        await drawDecorations(newPage, destPdf, pageItem);
       } else {
         destPdf.addPage(copiedPage);
 
@@ -588,21 +745,70 @@ export async function exportPageToImage(
     }
     context.rotate((rotation * Math.PI) / 180);
 
-    if (pageItem.crop) {
-      const cropX = pageItem.crop.x * viewport.width;
-      const cropY = pageItem.crop.y * viewport.height;
-      const cropW = pageItem.crop.width * viewport.width;
-      const cropH = pageItem.crop.height * viewport.height;
-      context.beginPath();
-      context.rect(cropX, cropY, cropW, cropH);
-      context.clip();
-    }
+    if (pageItem.crop && (pageItem.crop.placement === 'fit' || pageItem.crop.placement === 'trim-page')) {
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = viewport.width;
+      tempCanvas.height = viewport.height;
+      const tempCtx = tempCanvas.getContext('2d')!;
+      tempCtx.fillStyle = '#FFFFFF';
+      tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+      await page.render({
+        canvasContext: tempCtx,
+        viewport: viewport,
+        canvas: tempCanvas,
+      } as any).promise;
 
-    await page.render({
-      canvasContext: context,
-      viewport: viewport,
-      canvas: canvas,
-    } as any).promise;
+      const sx = pageItem.crop.x * viewport.width;
+      const sy = pageItem.crop.y * viewport.height;
+      const sw = pageItem.crop.width * viewport.width;
+      const sh = pageItem.crop.height * viewport.height;
+
+      const scaleFit = Math.min(canvas.width / sw, canvas.height / sh);
+      const dw = sw * scaleFit;
+      const dh = sh * scaleFit;
+      const dx = (canvas.width - dw) / 2;
+      const dy = (canvas.height - dh) / 2;
+
+      context.drawImage(tempCanvas, sx, sy, sw, sh, dx, dy, dw, dh);
+    } else if (pageItem.crop && pageItem.crop.placement === 'align-top') {
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = viewport.width;
+      tempCanvas.height = viewport.height;
+      const tempCtx = tempCanvas.getContext('2d')!;
+      tempCtx.fillStyle = '#FFFFFF';
+      tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+      await page.render({
+        canvasContext: tempCtx,
+        viewport: viewport,
+        canvas: tempCanvas,
+      } as any).promise;
+
+      const sx = pageItem.crop.x * viewport.width;
+      const sy = pageItem.crop.y * viewport.height;
+      const sw = pageItem.crop.width * viewport.width;
+      const sh = pageItem.crop.height * viewport.height;
+
+      const dx = (canvas.width - sw) / 2;
+      const dy = 0;
+
+      context.drawImage(tempCanvas, sx, sy, sw, sh, dx, dy, sw, sh);
+    } else {
+      if (pageItem.crop) {
+        const cropX = pageItem.crop.x * viewport.width;
+        const cropY = pageItem.crop.y * viewport.height;
+        const cropW = pageItem.crop.width * viewport.width;
+        const cropH = pageItem.crop.height * viewport.height;
+        context.beginPath();
+        context.rect(cropX, cropY, cropW, cropH);
+        context.clip();
+      }
+
+      await page.render({
+        canvasContext: context,
+        viewport: viewport,
+        canvas: canvas,
+      } as any).promise;
+    }
     
     context.restore();
     await (pdfDoc as any).destroy?.();
@@ -631,7 +837,7 @@ export async function exportPageToImage(
   }
   context.rotate((rotation * Math.PI) / 180);
 
-  if (pageItem.crop) {
+  if (pageItem.crop && pageItem.crop.placement !== 'fit' && pageItem.crop.placement !== 'align-top') {
     const cropX = pageItem.crop.x * viewportWidth;
     const cropY = pageItem.crop.y * viewportHeight;
     const cropW = pageItem.crop.width * viewportWidth;

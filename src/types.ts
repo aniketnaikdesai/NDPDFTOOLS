@@ -22,6 +22,7 @@ export interface CropArea {
   y: number; // 0 to 1 relative top coordinate
   width: number; // 0 to 1 relative width
   height: number; // 0 to 1 relative height
+  placement?: 'fit' | 'align-top' | 'original' | 'trim-page'; // how cropped/split content is positioned on page
 }
 
 export interface PageBorderSettings {
@@ -54,6 +55,7 @@ export interface PDFPageItem {
   lines?: LineAnnotation[];
   border?: PageBorderSettings;
   crop?: CropArea;
+  customLabel?: string; // Custom export filename label (e.g. 'Doc-001')
 }
 
 export type CompressionPreset = 'low' | 'medium' | 'high' | 'custom';

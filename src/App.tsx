@@ -35,7 +35,14 @@ import {
   Paintbrush,
   Check,
   ZoomIn,
-  ZoomOut
+  ZoomOut,
+  Scissors,
+  Columns2,
+  Rows2,
+  Tag,
+  FilePenLine,
+  Hash,
+  ListOrdered
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { PDFPageItem, SourceFile, CompressionSettings, CompressionPreset, CropArea } from './types';
@@ -52,7 +59,7 @@ export default function App() {
   const renderingHighResRef = useRef<Set<string>>(new Set());
   const getThumbKey = (page: PDFPageItem) => {
     if (!page) return '';
-    return `${page.id}_${page.rotation}_${page.crop ? `${page.crop.x.toFixed(3)}_${page.crop.y.toFixed(3)}_${page.crop.width.toFixed(3)}_${page.crop.height.toFixed(3)}` : 'nocrop'}`;
+    return `${page.id}_${page.rotation}_${page.crop ? `${page.crop.x.toFixed(3)}_${page.crop.y.toFixed(3)}_${page.crop.width.toFixed(3)}_${page.crop.height.toFixed(3)}_${page.crop.placement || 'orig'}` : 'nocrop'}`;
   };
   const [history, setHistory] = useState<PDFPageItem[][]>([]);
   
@@ -87,15 +94,25 @@ export default function App() {
 
   // Editor Modal State
   const [editorPage, setEditorPage] = useState<PDFPageItem | null>(null);
+  const [editorInitialPages, setEditorInitialPages] = useState<PDFPageItem[] | null>(null);
+  const [editorHistory, setEditorHistory] = useState<PDFPageItem[][]>([]);
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
   const [isAddingText, setIsAddingText] = useState(false);
-  const [editorMode, setEditorMode] = useState<'text' | 'crop'>('text');
+  const [editorMode, setEditorMode] = useState<'text' | 'crop' | 'split'>('text');
   const [isDraggingCrop, setIsDraggingCrop] = useState(false);
   const [cropStart, setCropStart] = useState<{ x: number; y: number } | null>(null);
   const [tempCrop, setTempCrop] = useState<CropArea | null>(null);
   const [activeColorPicker, setActiveColorPicker] = useState<'text' | 'bg' | null>(null);
   const [showEditorTooltip, setShowEditorTooltip] = useState(true);
   const [showCropTooltip, setShowCropTooltip] = useState(true);
+
+  // Split Page Feature States
+  const [splitOrientation, setSplitOrientation] = useState<'horizontal' | 'vertical'>('horizontal');
+  const [splitPosition, setSplitPosition] = useState<number>(0.5);
+  const [isDraggingSplitLine, setIsDraggingSplitLine] = useState<boolean>(false);
+  const [splitPlacement, setSplitPlacement] = useState<'fit' | 'align-top' | 'original'>('fit');
+  const [keepOriginalOnSplit, setKeepOriginalOnSplit] = useState<boolean>(false);
+  const [splitSuccessToast, setSplitSuccessToast] = useState<string | null>(null);
 
   // Zoom, Custom Lines, and Borders State
   const [zoomScale, setZoomScale] = useState<number>(1.0);
@@ -115,6 +132,7 @@ export default function App() {
       setSelectedLineId(null);
       setActiveLineColorPicker(false);
       setActiveBorderColorPicker(false);
+      setIsDraggingSplitLine(false);
     }
   }, [editorPage]);
 
@@ -124,19 +142,45 @@ export default function App() {
     return pages.find(p => p.id === editorPage.id) || null;
   }, [pages, editorPage]);
 
-  // Synchronize tempCrop when activeEditorPage changes
+  // Synchronize tempCrop and split state when opening a page in editor
   useEffect(() => {
-    if (activeEditorPage) {
-      setTempCrop(activeEditorPage.crop || null);
-      setEditorMode('text');
+    if (editorPage) {
+      setTempCrop(editorPage.crop || null);
       setShowCropTooltip(true);
+      setSplitPosition(0.5);
+      setIsDraggingSplitLine(false);
     } else {
       setTempCrop(null);
+      setIsDraggingSplitLine(false);
     }
-  }, [activeEditorPage]);
+  }, [editorPage?.id]);
+
+  // Auto-dismiss split success toast
+  useEffect(() => {
+    if (splitSuccessToast) {
+      const timer = setTimeout(() => setSplitSuccessToast(null), 4500);
+      return () => clearTimeout(timer);
+    }
+  }, [splitSuccessToast]);
 
   // Selected page IDs for bulk operations
   const [selectedPageIds, setSelectedPageIds] = useState<string[]>([]);
+
+  // Batch Rename Feature States
+  const [isBatchRenameOpen, setIsBatchRenameOpen] = useState(false);
+  const [batchPrefix, setBatchPrefix] = useState('Doc-');
+  const [batchStartNum, setBatchStartNum] = useState(1);
+  const [batchPadding, setBatchPadding] = useState<number>(3); // 1 = none (1), 2 = 01, 3 = 001
+  const [batchSuffix, setBatchSuffix] = useState('');
+  const [batchRenameToast, setBatchRenameToast] = useState<string | null>(null);
+
+  // Auto-dismiss batch rename toast
+  useEffect(() => {
+    if (batchRenameToast) {
+      const timer = setTimeout(() => setBatchRenameToast(null), 4500);
+      return () => clearTimeout(timer);
+    }
+  }, [batchRenameToast]);
 
   // Merge only selected pages option
   const [mergeOnlySelected, setMergeOnlySelected] = useState(false);
@@ -604,8 +648,101 @@ export default function App() {
     setCompiledPdf(null);
   };
 
+  // Push current pages onto the editor history stack for granular undo/revert
+  const pushEditorSnapshot = () => {
+    setEditorHistory(prev => [...prev.slice(-30), JSON.parse(JSON.stringify(pages))]);
+  };
+
+  // Open the page editor with a clean snapshot of the document pages
+  const openEditor = (page: PDFPageItem, mode: 'text' | 'crop' | 'split' = 'text') => {
+    setEditorInitialPages(JSON.parse(JSON.stringify(pages)));
+    setEditorHistory([]);
+    setEditorPage(page);
+    setEditorMode(mode);
+    setSelectedAnnotationId(null);
+    setSelectedLineId(null);
+    setIsAddingText(false);
+    setShowEditorTooltip(mode === 'text');
+    if (page.crop) {
+      setTempCrop(page.crop);
+    } else {
+      setTempCrop(null);
+    }
+  };
+
+  // Revert the last change made in the editor session (Undo)
+  const handleEditorRevertLastChange = () => {
+    if (editorHistory.length === 0) return;
+    const previousSnapshot = editorHistory[editorHistory.length - 1];
+    setEditorHistory(prev => prev.slice(0, -1));
+    setPages(previousSnapshot);
+    setCompiledPdf(null);
+    setCompiledImages(null);
+    
+    // Synchronize active crop or lines if needed
+    if (editorPage) {
+      const restored = previousSnapshot.find(p => p.id === editorPage.id);
+      if (restored) {
+        setTempCrop(restored.crop || null);
+      }
+    }
+  };
+
+  // Cancel all changes made in this editor session and reject/discard modifications
+  const handleEditorCancel = () => {
+    if (editorInitialPages) {
+      setPages(editorInitialPages);
+      setCompiledPdf(null);
+      setCompiledImages(null);
+    }
+    setEditorPage(null);
+    setEditorInitialPages(null);
+    setEditorHistory([]);
+    setSelectedAnnotationId(null);
+    setSelectedLineId(null);
+    setIsAddingText(false);
+    setTempCrop(null);
+  };
+
+  // Apply changes made in this editor session and close
+  const handleEditorApply = () => {
+    if (editorInitialPages && editorHistory.length > 0) {
+      // Save original snapshot to main app history for global undo support
+      saveToHistory(editorInitialPages);
+    }
+    setEditorPage(null);
+    setEditorInitialPages(null);
+    setEditorHistory([]);
+    setSelectedAnnotationId(null);
+    setSelectedLineId(null);
+    setIsAddingText(false);
+    setTempCrop(null);
+  };
+
+  // Keyboard shortcuts inside Page Editor (Esc to Cancel, Ctrl+Z to Revert Last Change)
+  useEffect(() => {
+    if (!editorPage) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        handleEditorCancel();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
+        const targetTag = (e.target as HTMLElement)?.tagName?.toLowerCase();
+        if (targetTag !== 'input' && targetTag !== 'textarea') {
+          e.preventDefault();
+          handleEditorRevertLastChange();
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [editorPage, editorHistory, editorInitialPages]);
+
   const handleAddTextAnnotation = (xRatio: number, yRatio: number) => {
     if (!editorPage) return;
+    pushEditorSnapshot();
     saveToHistory(pages);
     
     const newAnnotation = {
@@ -636,6 +773,7 @@ export default function App() {
 
   const handleSaveCrop = (crop: CropArea | null) => {
     if (!editorPage) return;
+    pushEditorSnapshot();
     saveToHistory(pages);
     
     setPages(prev => prev.map(p => {
@@ -651,8 +789,153 @@ export default function App() {
     setCompiledPdf(null);
   };
 
+  const handleExecuteSplitPage = () => {
+    if (!activeEditorPage) return;
+
+    saveToHistory(pages);
+
+    const origW = activeEditorPage.width;
+    const origH = activeEditorPage.height;
+    const isHoriz = splitOrientation === 'horizontal';
+
+    // Calculate crop areas based on existing crop (if page was already cropped) or full page
+    const baseCrop = activeEditorPage.crop || { x: 0, y: 0, width: 1.0, height: 1.0 };
+
+    // Page 1 (Top or Left half)
+    const page1Id = `page_${Date.now()}_split_1`;
+    const page1Crop: CropArea = isHoriz
+      ? {
+          x: baseCrop.x,
+          y: baseCrop.y,
+          width: baseCrop.width,
+          height: baseCrop.height * splitPosition,
+          placement: splitPlacement,
+        }
+      : {
+          x: baseCrop.x,
+          y: baseCrop.y,
+          width: baseCrop.width * splitPosition,
+          height: baseCrop.height,
+          placement: splitPlacement,
+        };
+
+    // Remap annotations for Page 1
+    const page1Annotations = (activeEditorPage.textAnnotations || [])
+      .filter(ann => (isHoriz ? ann.y <= splitPosition : ann.x <= splitPosition))
+      .map(ann => {
+        if (splitPlacement === 'fit') {
+          return {
+            ...ann,
+            id: `ann_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+            x: isHoriz ? ann.x : ann.x / splitPosition,
+            y: isHoriz ? ann.y / splitPosition : ann.y,
+          };
+        }
+        return {
+          ...ann,
+          id: `ann_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        };
+      });
+
+    const page1: PDFPageItem = {
+      ...activeEditorPage,
+      id: page1Id,
+      width: origW,
+      height: origH,
+      crop: page1Crop,
+      textAnnotations: page1Annotations,
+      lines: (activeEditorPage.lines || []).filter(l =>
+        isHoriz
+          ? (l.orientation === 'horizontal' ? l.position <= splitPosition : true)
+          : (l.orientation === 'vertical' ? l.position <= splitPosition : true)
+      ),
+    };
+
+    // Page 2 (Bottom or Right half)
+    const page2Id = `page_${Date.now() + 1}_split_2`;
+    const page2Crop: CropArea = isHoriz
+      ? {
+          x: baseCrop.x,
+          y: baseCrop.y + baseCrop.height * splitPosition,
+          width: baseCrop.width,
+          height: baseCrop.height * (1.0 - splitPosition),
+          placement: splitPlacement,
+        }
+      : {
+          x: baseCrop.x + baseCrop.width * splitPosition,
+          y: baseCrop.y,
+          width: baseCrop.width * (1.0 - splitPosition),
+          height: baseCrop.height,
+          placement: splitPlacement,
+        };
+
+    // Remap annotations for Page 2
+    const page2Annotations = (activeEditorPage.textAnnotations || [])
+      .filter(ann => (isHoriz ? ann.y > splitPosition : ann.x > splitPosition))
+      .map(ann => {
+        if (splitPlacement === 'fit') {
+          return {
+            ...ann,
+            id: `ann_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+            x: isHoriz ? ann.x : (ann.x - splitPosition) / (1.0 - splitPosition),
+            y: isHoriz ? (ann.y - splitPosition) / (1.0 - splitPosition) : ann.y,
+          };
+        } else if (splitPlacement === 'align-top') {
+          return {
+            ...ann,
+            id: `ann_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+            x: isHoriz ? ann.x : ann.x - splitPosition,
+            y: isHoriz ? ann.y - splitPosition : ann.y,
+          };
+        }
+        return {
+          ...ann,
+          id: `ann_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        };
+      });
+
+    const page2: PDFPageItem = {
+      ...activeEditorPage,
+      id: page2Id,
+      width: origW,
+      height: origH,
+      crop: page2Crop,
+      textAnnotations: page2Annotations,
+      lines: (activeEditorPage.lines || []).filter(l =>
+        isHoriz
+          ? (l.orientation === 'horizontal' ? l.position > splitPosition : true)
+          : (l.orientation === 'vertical' ? l.position > splitPosition : true)
+      ),
+    };
+
+    setPages(prev => {
+      const next: PDFPageItem[] = [];
+      for (const p of prev) {
+        if (p.id === activeEditorPage.id) {
+          if (keepOriginalOnSplit) {
+            next.push(p);
+          }
+          next.push(page1, page2);
+        } else {
+          next.push(p);
+        }
+      }
+      return next;
+    });
+
+    setEditorPage(null);
+    setSelectedAnnotationId(null);
+    setIsAddingText(false);
+    setCompiledPdf(null);
+    setCompiledImages(null);
+    setSplitSuccessToast(
+      `Successfully split into 2 separate pages (${Math.round(origW)} × ${Math.round(origH)} pt each)!`
+    );
+  };
+
   const handleRemoveTextAnnotation = () => {
     if (!editorPage) return;
+    pushEditorSnapshot();
     saveToHistory(pages);
     
     setPages(prev => prev.map(p => {
@@ -686,6 +969,7 @@ export default function App() {
 
   const changeFontSize = (annId: string, change: number) => {
     if (!editorPage) return;
+    pushEditorSnapshot();
     setPages(prev => prev.map(p => {
       if (p.id === editorPage.id) {
         const existing = p.textAnnotations || [];
@@ -707,6 +991,7 @@ export default function App() {
 
   const updateAnnotationAlignment = (annId: string, alignment: 'left' | 'center' | 'right') => {
     if (!editorPage) return;
+    pushEditorSnapshot();
     saveToHistory(pages);
     setPages(prev => prev.map(p => {
       if (p.id === editorPage.id) {
@@ -723,6 +1008,7 @@ export default function App() {
 
   const handleAddLine = (orientation: 'horizontal' | 'vertical') => {
     if (!editorPage) return;
+    pushEditorSnapshot();
     saveToHistory(pages);
     
     const newLine = {
@@ -752,6 +1038,7 @@ export default function App() {
   };
 
   const handleAddLineToAllPages = (orientation: 'horizontal' | 'vertical') => {
+    pushEditorSnapshot();
     saveToHistory(pages);
     
     setPages(prev => prev.map(p => {
@@ -776,6 +1063,7 @@ export default function App() {
   };
 
   const handleApplyLineToAllPages = (sourceLine: any) => {
+    pushEditorSnapshot();
     saveToHistory(pages);
     
     setPages(prev => prev.map(p => {
@@ -817,6 +1105,7 @@ export default function App() {
 
   const handleUpdateLine = (lineId: string, updates: Partial<any>) => {
     if (!editorPage) return;
+    pushEditorSnapshot();
     setPages(prev => prev.map(p => {
       if (p.id === editorPage.id) {
         const existing = p.lines || [];
@@ -832,6 +1121,7 @@ export default function App() {
 
   const handleDeleteLine = (lineId: string) => {
     if (!editorPage) return;
+    pushEditorSnapshot();
     saveToHistory(pages);
     setPages(prev => prev.map(p => {
       if (p.id === editorPage.id) {
@@ -851,6 +1141,7 @@ export default function App() {
 
   const handleUpdateBorder = (updates: Partial<any>) => {
     if (!editorPage) return;
+    pushEditorSnapshot();
     setPages(prev => prev.map(p => {
       if (p.id === editorPage.id) {
         const existingBorder = p.border || {
@@ -870,6 +1161,7 @@ export default function App() {
   };
 
   const handleApplyBorderToAllPages = (borderSettings: any) => {
+    pushEditorSnapshot();
     saveToHistory(pages);
     setPages(prev => prev.map(p => ({
       ...p,
@@ -880,6 +1172,7 @@ export default function App() {
 
   const updateAnnotationColor = (annId: string, color: string) => {
     if (!editorPage) return;
+    pushEditorSnapshot();
     saveToHistory(pages);
     setPages(prev => prev.map(p => {
       if (p.id === editorPage.id) {
@@ -896,6 +1189,7 @@ export default function App() {
 
   const updateAnnotationBgColor = (annId: string, backgroundColor: string) => {
     if (!editorPage) return;
+    pushEditorSnapshot();
     saveToHistory(pages);
     setPages(prev => prev.map(p => {
       if (p.id === editorPage.id) {
@@ -912,6 +1206,7 @@ export default function App() {
 
   const deleteSingleAnnotation = (annId: string) => {
     if (!editorPage) return;
+    pushEditorSnapshot();
     saveToHistory(pages);
     setPages(prev => prev.map(p => {
       if (p.id === editorPage.id) {
@@ -1000,6 +1295,84 @@ export default function App() {
     setCompiledPdf(null);
   };
 
+  // Selected pages in current workspace/document order
+  const selectedPagesInOrder = useMemo(() => {
+    return pages.filter(p => selectedPageIds.includes(p.id));
+  }, [pages, selectedPageIds]);
+
+  const formatBatchNumber = (num: number, padding: number) => {
+    if (padding <= 1) return String(num);
+    return String(num).padStart(padding, '0');
+  };
+
+  const computeBatchLabel = (indexInSelection: number) => {
+    const num = batchStartNum + indexInSelection;
+    return `${batchPrefix}${formatBatchNumber(num, batchPadding)}${batchSuffix}`.trim();
+  };
+
+  const handleApplyBatchRename = () => {
+    if (selectedPagesInOrder.length === 0) return;
+    saveToHistory(pages);
+
+    const idToLabelMap = new Map<string, string>();
+    selectedPagesInOrder.forEach((page, idx) => {
+      idToLabelMap.set(page.id, computeBatchLabel(idx));
+    });
+
+    setPages(prev => prev.map(p => {
+      if (idToLabelMap.has(p.id)) {
+        return {
+          ...p,
+          customLabel: idToLabelMap.get(p.id),
+        };
+      }
+      return p;
+    }));
+
+    setCompiledPdf(null);
+    setCompiledImages(null);
+    setIsBatchRenameOpen(false);
+
+    const firstLabel = idToLabelMap.get(selectedPagesInOrder[0].id);
+    const lastLabel = idToLabelMap.get(selectedPagesInOrder[selectedPagesInOrder.length - 1].id);
+    setBatchRenameToast(
+      selectedPagesInOrder.length === 1
+        ? `Renamed 1 page to "${firstLabel}"`
+        : `Renamed ${selectedPagesInOrder.length} pages (${firstLabel} ... ${lastLabel})`
+    );
+  };
+
+  const handleClearBatchRename = () => {
+    if (selectedPagesInOrder.length === 0) return;
+    saveToHistory(pages);
+
+    setPages(prev => prev.map(p => {
+      if (selectedPageIds.includes(p.id)) {
+        const { customLabel, ...rest } = p;
+        return rest;
+      }
+      return p;
+    }));
+
+    setCompiledPdf(null);
+    setCompiledImages(null);
+    setIsBatchRenameOpen(false);
+    setBatchRenameToast(`Reset labels for ${selectedPagesInOrder.length} selected pages`);
+  };
+
+  const handleClearSingleLabel = (pageId: string) => {
+    saveToHistory(pages);
+    setPages(prev => prev.map(p => {
+      if (p.id === pageId) {
+        const { customLabel, ...rest } = p;
+        return rest;
+      }
+      return p;
+    }));
+    setCompiledPdf(null);
+    setCompiledImages(null);
+  };
+
   const clearAll = () => {
     saveToHistory(pages);
     setPages([]);
@@ -1080,10 +1453,11 @@ export default function App() {
           
           const dataUrl = await exportPageToImage(sourceFile, page, exportScale, formatType);
           
-          // Generate file name
+          // Generate file name (prefer user's custom batch label if set)
           const pageNum = page.originalIndex + 1;
           const ext = exportFormat === 'png' ? 'png' : 'jpg';
-          const name = `${cleanName}_page_${pageNum}.${ext}`;
+          const baseName = page.customLabel ? page.customLabel : `${cleanName}_page_${pageNum}`;
+          const name = `${baseName}.${ext}`;
           
           filesToExport.push({ dataUrl, name });
         }
@@ -1570,6 +1944,17 @@ export default function App() {
                         <span className="md:hidden">Dup</span>
                       </button>
 
+                      <button
+                        onClick={() => setIsBatchRenameOpen(true)}
+                        disabled={selectedPageIds.length === 0}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-slate-50 disabled:opacity-50 disabled:hover:bg-white text-slate-700 border border-slate-200 rounded text-xs font-bold uppercase tracking-wider transition cursor-pointer disabled:cursor-not-allowed shadow-xs"
+                        title="Batch rename exported file labels for selected pages"
+                      >
+                        <Tag className="h-3.5 w-3.5 text-blue-600" />
+                        <span className="hidden md:inline">Batch Rename</span>
+                        <span className="md:hidden">Rename</span>
+                      </button>
+
                       <div className="h-6 w-[1px] bg-slate-200"></div>
 
                       <button
@@ -1581,6 +1966,20 @@ export default function App() {
                         <Trash2 className="h-3.5 w-3.5 text-rose-500" />
                         <span>Delete</span>
                       </button>
+
+                      {history.length > 0 && (
+                        <>
+                          <div className="h-6 w-[1px] bg-slate-200"></div>
+                          <button
+                            onClick={undo}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded text-xs font-bold uppercase tracking-wider transition cursor-pointer shadow-xs"
+                            title="Undo last change"
+                          >
+                            <Undo2 className="h-3.5 w-3.5 text-slate-500" />
+                            <span>Undo</span>
+                          </button>
+                        </>
+                      )}
                     </div>
                   </div>
                 )}
@@ -1703,6 +2102,27 @@ export default function App() {
                             )}
                           </div>
 
+                          {/* Custom Export Label Badge */}
+                          {page.customLabel && (
+                            <div className="mt-1 mb-0.5 px-2 py-1 rounded bg-blue-50/90 border border-blue-200/80 text-blue-700 text-[10px] font-mono font-semibold flex items-center justify-between gap-1 shadow-2xs">
+                              <div className="flex items-center gap-1.5 min-w-0 truncate" title={`Export filename: ${page.customLabel}`}>
+                                <Tag className="h-3 w-3 shrink-0 text-blue-600" />
+                                <span className="truncate">{page.customLabel}</span>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleClearSingleLabel(page.id);
+                                }}
+                                className="text-slate-400 hover:text-rose-600 transition p-0.5 rounded cursor-pointer shrink-0"
+                                title="Clear custom label"
+                              >
+                                <X className="h-2.5 w-2.5" />
+                              </button>
+                            </div>
+                          )}
+
                           {/* Controls Footer */}
                           <div className="mt-2 pt-2 border-t border-slate-100 flex flex-col space-y-1.5">
                             {/* Reordering Controls (Touch Target sizes optimized) */}
@@ -1754,15 +2174,12 @@ export default function App() {
                               </button>
                             </div>
 
-                            {/* Edit & Delete Action buttons */}
-                            <div className="flex gap-1.5 mt-0.5">
+                            {/* Edit, Split & Delete Action buttons */}
+                            <div className="flex gap-1 mt-0.5">
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  setEditorPage(page);
-                                  setSelectedAnnotationId(null);
-                                  setIsAddingText(false);
-                                  setShowEditorTooltip(true);
+                                  openEditor(page, 'text');
                                 }}
                                 className="flex-1 py-1 rounded bg-slate-50 hover:bg-slate-100 text-slate-700 hover:text-slate-800 transition flex items-center justify-center space-x-1 text-[11px] font-bold uppercase tracking-wider cursor-pointer border border-slate-200"
                                 title="Edit this page's text"
@@ -1773,12 +2190,23 @@ export default function App() {
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
+                                  openEditor(page, 'split');
+                                }}
+                                className="flex-1 py-1 rounded bg-slate-50 hover:bg-slate-100 text-slate-700 hover:text-slate-800 transition flex items-center justify-center space-x-1 text-[11px] font-bold uppercase tracking-wider cursor-pointer border border-slate-200"
+                                title="Split page into two separate pages"
+                              >
+                                <Scissors className="h-3 w-3 text-rose-500" />
+                                <span>Split</span>
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
                                   deletePage(page.id);
                                 }}
-                                className="flex-1 py-1 rounded hover:bg-rose-50 text-rose-600 hover:text-rose-700 transition flex items-center justify-center space-x-1 text-[11px] font-bold uppercase tracking-wider cursor-pointer border border-transparent hover:border-rose-100"
+                                className="px-2 py-1 rounded hover:bg-rose-50 text-rose-600 hover:text-rose-700 transition flex items-center justify-center space-x-1 text-[11px] font-bold uppercase tracking-wider cursor-pointer border border-transparent hover:border-rose-100"
+                                title="Delete page"
                               >
                                 <Trash2 className="h-3 w-3" />
-                                <span>Delete</span>
                               </button>
                             </div>
                           </div>
@@ -2252,6 +2680,12 @@ export default function App() {
                             <span className="font-mono text-white font-bold">{exportMethod === 'zip' ? 'Single ZIP File' : 'Separate Files'}</span>
                           </div>
                         </div>
+                        {selectedPagesInOrder.some(p => !!p.customLabel) && (
+                          <div className="flex items-center gap-1.5 pt-1.5 border-t border-slate-800 text-[10px] text-blue-400 font-mono">
+                            <Tag className="h-3 w-3 shrink-0" />
+                            <span>Custom filenames active ({selectedPagesInOrder.filter(p => !!p.customLabel).length} of {selectedPagesInOrder.length})</span>
+                          </div>
+                        )}
                       </div>
                     )}
 
@@ -2389,6 +2823,301 @@ export default function App() {
         </div>
       )}
 
+      {/* Split Success Toast Notification */}
+      <AnimatePresence>
+        {splitSuccessToast && (
+          <motion.div
+            initial={{ opacity: 0, y: -20, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -20, scale: 0.95 }}
+            className="fixed top-20 left-1/2 -translate-x-1/2 z-50 bg-slate-900 text-white px-5 py-3 rounded-lg shadow-2xl border border-slate-700 backdrop-blur-md flex items-center gap-3 text-xs font-semibold"
+          >
+            <CheckCircle className="h-4 w-4 text-emerald-400 shrink-0" />
+            <span>{splitSuccessToast}</span>
+            <button
+              onClick={() => setSplitSuccessToast(null)}
+              className="ml-2 text-slate-400 hover:text-white cursor-pointer"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Batch Rename Success Toast Notification */}
+      <AnimatePresence>
+        {batchRenameToast && (
+          <motion.div
+            initial={{ opacity: 0, y: -20, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -20, scale: 0.95 }}
+            className="fixed top-20 left-1/2 -translate-x-1/2 z-50 bg-slate-900 text-white px-5 py-3 rounded-lg shadow-2xl border border-slate-700 backdrop-blur-md flex items-center gap-3 text-xs font-semibold"
+          >
+            <CheckCircle className="h-4 w-4 text-blue-400 shrink-0" />
+            <span>{batchRenameToast}</span>
+            <button
+              onClick={() => setBatchRenameToast(null)}
+              className="ml-2 text-slate-400 hover:text-white cursor-pointer"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Batch Rename Modal Dialog */}
+      {isBatchRenameOpen && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl max-w-2xl w-full flex flex-col shadow-2xl border border-slate-200 overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            {/* Modal Header */}
+            <div className="p-4 border-b border-slate-150 flex items-center justify-between shrink-0 bg-slate-50">
+              <div className="flex items-center space-x-2.5">
+                <div className="p-2 rounded-lg bg-blue-50 border border-blue-200/80 text-blue-600">
+                  <Tag className="h-4 w-4" />
+                </div>
+                <div>
+                  <h4 className="font-display font-bold text-slate-900 text-sm uppercase tracking-wider flex items-center gap-2">
+                    <span>Batch Rename Export Labels</span>
+                    <span className="font-mono text-[10px] text-blue-600 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-full font-bold">
+                      {selectedPagesInOrder.length} Page{selectedPagesInOrder.length > 1 ? 's' : ''} Selected
+                    </span>
+                  </h4>
+                  <p className="text-[11px] text-slate-500 font-medium mt-0.5">
+                    Configure a sequential naming pattern for all selected pages when exported as images or in a ZIP package.
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsBatchRenameOpen(false)}
+                className="p-1.5 hover:bg-slate-200 rounded-md text-slate-400 hover:text-slate-700 transition cursor-pointer"
+                title="Close"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-5 overflow-y-auto max-h-[calc(85vh-140px)] space-y-4 text-slate-700">
+              
+              {/* Pattern Inputs */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                {/* Prefix */}
+                <div className="md:col-span-2">
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[10px] font-bold text-slate-600 uppercase tracking-wider">
+                      Filename Prefix
+                    </label>
+                    <span className="text-[10px] text-slate-400">e.g. Doc-, Invoice_</span>
+                  </div>
+                  <input
+                    type="text"
+                    value={batchPrefix}
+                    onChange={(e) => setBatchPrefix(e.target.value)}
+                    placeholder="e.g. Doc-"
+                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-md text-xs font-mono font-medium focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 shadow-2xs"
+                  />
+                  {/* Preset chips */}
+                  <div className="flex flex-wrap gap-1.5 mt-2">
+                    {['Doc-', 'Page-', 'Invoice_', 'Scan_', 'Slide_', 'Chapter-'].map(preset => (
+                      <button
+                        key={preset}
+                        type="button"
+                        onClick={() => setBatchPrefix(preset)}
+                        className={`text-[10px] font-mono px-2 py-0.5 rounded border transition cursor-pointer ${
+                          batchPrefix === preset
+                            ? 'bg-blue-600 text-white border-blue-600 font-bold shadow-2xs'
+                            : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100 hover:text-slate-900'
+                        }`}
+                      >
+                        {preset}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Suffix */}
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[10px] font-bold text-slate-600 uppercase tracking-wider">
+                      Suffix (Optional)
+                    </label>
+                  </div>
+                  <input
+                    type="text"
+                    value={batchSuffix}
+                    onChange={(e) => setBatchSuffix(e.target.value)}
+                    placeholder="e.g. _v1 or _final"
+                    className="w-full px-3 py-2 bg-white border border-slate-300 rounded-md text-xs font-mono font-medium focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 shadow-2xs"
+                  />
+                  <div className="flex flex-wrap gap-1.5 mt-2">
+                    {['', '_final', '_v1', '_signed'].map(suffixPreset => (
+                      <button
+                        key={suffixPreset || 'none'}
+                        type="button"
+                        onClick={() => setBatchSuffix(suffixPreset)}
+                        className={`text-[10px] font-mono px-2 py-0.5 rounded border transition cursor-pointer ${
+                          batchSuffix === suffixPreset
+                            ? 'bg-blue-600 text-white border-blue-600 font-bold shadow-2xs'
+                            : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+                        }`}
+                      >
+                        {suffixPreset || 'None'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Start Number and Number Padding */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-3 border-t border-slate-150">
+                {/* Start Number */}
+                <div>
+                  <label className="text-[10px] font-bold text-slate-600 uppercase tracking-wider block mb-1">
+                    Starting Number
+                  </label>
+                  <div className="flex items-center space-x-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setBatchStartNum(prev => Math.max(0, prev - 1))}
+                      className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded border border-slate-300 text-xs font-bold transition cursor-pointer"
+                    >
+                      -
+                    </button>
+                    <input
+                      type="number"
+                      min="0"
+                      value={batchStartNum}
+                      onChange={(e) => setBatchStartNum(Math.max(0, parseInt(e.target.value) || 0))}
+                      className="w-24 px-3 py-1.5 bg-white border border-slate-300 rounded text-xs font-mono font-bold text-center focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 shadow-2xs"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setBatchStartNum(prev => prev + 1)}
+                      className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded border border-slate-300 text-xs font-bold transition cursor-pointer"
+                    >
+                      +
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setBatchStartNum(1)}
+                      className="text-[10px] text-slate-500 hover:text-slate-800 uppercase font-bold ml-1 cursor-pointer"
+                    >
+                      Reset (1)
+                    </button>
+                  </div>
+                </div>
+
+                {/* Padding Presets */}
+                <div>
+                  <label className="text-[10px] font-bold text-slate-600 uppercase tracking-wider block mb-1">
+                    Number Format / Padding
+                  </label>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {[
+                      { val: 3, label: '001', desc: '3 Digits' },
+                      { val: 2, label: '01', desc: '2 Digits' },
+                      { val: 1, label: '1', desc: 'No Padding' },
+                    ].map(pad => (
+                      <button
+                        key={pad.val}
+                        type="button"
+                        onClick={() => setBatchPadding(pad.val)}
+                        className={`p-1.5 rounded border text-center transition cursor-pointer ${
+                          batchPadding === pad.val
+                            ? 'bg-blue-50 border-blue-400 text-blue-700 ring-1 ring-blue-400 shadow-2xs'
+                            : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                        }`}
+                      >
+                        <span className="block font-mono font-bold text-xs">{pad.label}</span>
+                        <span className="block text-[9px] text-slate-400">{pad.desc}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Live Preview List */}
+              <div className="pt-2">
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-[10px] font-bold text-slate-600 uppercase tracking-wider flex items-center gap-1.5">
+                    <ListOrdered className="h-3.5 w-3.5 text-blue-600" />
+                    <span>Live Filename Preview ({selectedPagesInOrder.length} pages)</span>
+                  </span>
+                  <span className="text-[10px] font-mono text-slate-400">
+                    Preview format: {exportFormat === 'pdf' ? '.png / .jpg' : `.${exportFormat}`}
+                  </span>
+                </div>
+
+                <div className="border border-slate-200 rounded-lg overflow-hidden bg-slate-50/60 max-h-48 overflow-y-auto">
+                  <div className="divide-y divide-slate-200 text-xs">
+                    {selectedPagesInOrder.map((page, idx) => {
+                      const docIndex = pages.findIndex(p => p.id === page.id) + 1;
+                      const calculatedLabel = computeBatchLabel(idx);
+                      const fileExt = exportFormat === 'jpeg' ? 'jpg' : (exportFormat === 'png' ? 'png' : 'png');
+                      return (
+                        <div key={page.id} className="px-3 py-2 flex items-center justify-between hover:bg-white transition-colors gap-3">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="font-mono text-[10px] bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded font-bold shrink-0">
+                              Doc Page #{docIndex}
+                            </span>
+                            <span className="text-[11px] text-slate-500 truncate" title={sourceFiles[page.sourceFileId]?.name || 'Blank'}>
+                              {page.sourceFileId === 'blank' ? 'Blank Canvas' : (sourceFiles[page.sourceFileId]?.name || 'Document')}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <span className="text-slate-300">→</span>
+                            <span className="font-mono font-bold text-[11px] text-blue-700 bg-blue-50 border border-blue-200/90 px-2 py-0.5 rounded shadow-2xs flex items-center gap-1">
+                              <Tag className="h-2.5 w-2.5 text-blue-500" />
+                              <span>{calculatedLabel}.{fileExt}</span>
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
+            </div>
+
+            {/* Modal Footer Actions */}
+            <div className="p-4 border-t border-slate-150 flex items-center justify-between shrink-0 bg-slate-50">
+              <div>
+                {selectedPagesInOrder.some(p => !!p.customLabel) && (
+                  <button
+                    type="button"
+                    onClick={handleClearBatchRename}
+                    className="text-xs text-rose-600 hover:text-rose-700 font-bold uppercase tracking-wider px-2 py-1.5 rounded hover:bg-rose-50 transition cursor-pointer border border-transparent hover:border-rose-200"
+                  >
+                    Reset to Default Names
+                  </button>
+                )}
+              </div>
+
+              <div className="flex items-center space-x-2">
+                <button
+                  type="button"
+                  onClick={() => setIsBatchRenameOpen(false)}
+                  className="px-3.5 py-2 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded text-xs font-bold uppercase tracking-wider transition cursor-pointer shadow-2xs"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleApplyBatchRename}
+                  disabled={selectedPagesInOrder.length === 0}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs font-bold uppercase tracking-wider transition cursor-pointer shadow-sm flex items-center space-x-1.5 active:scale-98 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <Check className="h-3.5 w-3.5" />
+                  <span>Apply to {selectedPagesInOrder.length} Page{selectedPagesInOrder.length > 1 ? 's' : ''}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Interactive PDF Page Editor Modal */}
       {activeEditorPage && (
         <div className="fixed inset-0 bg-slate-950/85 backdrop-blur-xs z-50 flex items-center justify-center p-4">
@@ -2440,6 +3169,20 @@ export default function App() {
                   >
                     Crop Page
                   </button>
+                  <button
+                    onClick={() => {
+                      setEditorMode('split');
+                      setIsAddingText(false);
+                    }}
+                    className={`px-3 py-1 text-[10px] font-bold uppercase tracking-wider rounded transition cursor-pointer flex items-center gap-1.5 ${
+                      editorMode === 'split'
+                        ? 'bg-white text-blue-600 shadow-2xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <Scissors className="h-3 w-3" />
+                    <span>Split Page</span>
+                  </button>
                 </div>
               </div>
 
@@ -2470,7 +3213,7 @@ export default function App() {
                       <span>Remove All User Added Text</span>
                     </button>
                   </>
-                ) : (
+                ) : editorMode === 'crop' ? (
                   <>
                     <button
                       onClick={() => handleSaveCrop(tempCrop)}
@@ -2492,19 +3235,68 @@ export default function App() {
                       <span>Reset Crop</span>
                     </button>
                   </>
+                ) : (
+                  <>
+                    <button
+                      onClick={handleExecuteSplitPage}
+                      className="inline-flex items-center space-x-1.5 text-xs bg-blue-600 hover:bg-blue-700 text-white px-3.5 py-2 border border-blue-600 rounded transition font-bold uppercase tracking-wider cursor-pointer shadow-sm active:scale-95"
+                      title="Split this page into 2 separate pages in your document"
+                    >
+                      <Scissors className="h-3.5 w-3.5" />
+                      <span>Split into 2 Pages</span>
+                    </button>
+
+                    <button
+                      onClick={() => setSplitPosition(0.5)}
+                      disabled={splitPosition === 0.5}
+                      className="inline-flex items-center space-x-1 text-xs bg-white hover:bg-slate-50 text-slate-700 disabled:opacity-40 border border-slate-200 px-2.5 py-2 rounded transition font-bold uppercase tracking-wider cursor-pointer shadow-2xs"
+                      title="Reset cut line to 50% midpoint"
+                    >
+                      <RefreshCw className="h-3 w-3" />
+                      <span>50%</span>
+                    </button>
+                  </>
                 )}
 
                 <div className="w-[1px] bg-slate-200 h-6 mx-1" />
 
-                <button 
-                  onClick={() => {
-                    setEditorPage(null);
-                    setSelectedAnnotationId(null);
-                    setIsAddingText(false);
-                  }} 
-                  className="inline-flex items-center space-x-1 text-xs bg-slate-700 hover:bg-slate-800 text-white px-3.5 py-2 rounded transition font-bold uppercase tracking-wider cursor-pointer shadow-2xs"
+                {/* Revert Last Change / Undo Button on the Panel */}
+                <button
+                  type="button"
+                  onClick={handleEditorRevertLastChange}
+                  disabled={editorHistory.length === 0}
+                  className="inline-flex items-center space-x-1.5 text-xs bg-white hover:bg-slate-100 disabled:opacity-40 disabled:hover:bg-white text-slate-700 disabled:text-slate-400 border border-slate-300 disabled:border-slate-200 px-3 py-2 rounded transition font-bold uppercase tracking-wider cursor-pointer disabled:cursor-not-allowed shadow-2xs"
+                  title="Revert last change (Undo) - Ctrl+Z"
                 >
-                  <span>Close & Apply</span>
+                  <Undo2 className="h-3.5 w-3.5 text-slate-600" />
+                  <span>Revert Last Change</span>
+                  {editorHistory.length > 0 && (
+                    <span className="ml-0.5 text-[10px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full font-mono font-bold leading-none">
+                      {editorHistory.length}
+                    </span>
+                  )}
+                </button>
+
+                {/* Cancel Button: Reject changes and do not apply */}
+                <button
+                  type="button"
+                  onClick={handleEditorCancel}
+                  className="inline-flex items-center space-x-1.5 text-xs bg-white hover:bg-rose-50 text-slate-700 hover:text-rose-700 border border-slate-300 hover:border-rose-300 px-3.5 py-2 rounded transition font-bold uppercase tracking-wider cursor-pointer shadow-2xs active:scale-98"
+                  title="Reject all changes made and exit without applying (Esc)"
+                >
+                  <X className="h-3.5 w-3.5 text-rose-500" />
+                  <span>Cancel</span>
+                </button>
+
+                {/* Apply Button: Save and apply changes */}
+                <button 
+                  type="button"
+                  onClick={handleEditorApply} 
+                  className="inline-flex items-center space-x-1.5 text-xs bg-blue-600 hover:bg-blue-700 text-white px-3.5 py-2 rounded transition font-bold uppercase tracking-wider cursor-pointer shadow-2xs active:scale-98 font-bold"
+                  title="Apply changes and return to document"
+                >
+                  <Check className="h-3.5 w-3.5" />
+                  <span>Apply & Close</span>
                 </button>
               </div>
             </div>
@@ -2571,20 +3363,42 @@ export default function App() {
                   </div>
                 )}
 
+                {editorMode === 'split' && (
+                  <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-slate-800/95 border border-slate-700/50 backdrop-blur-md text-white pl-4 pr-3 py-2 rounded-full text-xs font-medium tracking-normal flex items-center gap-2 pointer-events-auto shadow-xl z-20">
+                    <Scissors className="h-3.5 w-3.5 text-rose-400 animate-pulse shrink-0" />
+                    <span>Split Mode: Click or drag the cut line on the page to divide into 2 separate pages</span>
+                  </div>
+                )}
+
                 {/* The Page Container */}
                 <div 
                   className={`relative shadow-2xl bg-white select-none transition-transform ${
-                    editorMode === 'crop' ? 'cursor-crosshair' : (isAddingText ? 'cursor-crosshair' : 'cursor-default')
+                    editorMode === 'crop' 
+                      ? 'cursor-crosshair' 
+                      : editorMode === 'split'
+                        ? (splitOrientation === 'horizontal' ? 'cursor-row-resize' : 'cursor-col-resize')
+                        : (isAddingText ? 'cursor-crosshair' : 'cursor-default')
                   }`}
                   style={{
                     // Keep a clean aspect ratio and maximum sizing for responsive editing
                     width: '100%',
                     maxWidth: `${activeEditorPage.width * zoomScale}px`,
                     aspectRatio: `${activeEditorPage.width} / ${activeEditorPage.height}`,
-                    transform: editorMode === 'crop' ? 'none' : `rotate(${activeEditorPage.rotation}deg)`
+                    transform: (editorMode === 'crop' || editorMode === 'split') ? 'none' : `rotate(${activeEditorPage.rotation}deg)`
                   }}
                   onMouseDown={(e) => {
-                    if (editorMode === 'crop') {
+                    if (editorMode === 'split') {
+                      e.stopPropagation();
+                      setIsDraggingSplitLine(true);
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      if (splitOrientation === 'horizontal') {
+                        const pos = Math.max(0.05, Math.min(0.95, (e.clientY - rect.top) / rect.height));
+                        setSplitPosition(pos);
+                      } else {
+                        const pos = Math.max(0.05, Math.min(0.95, (e.clientX - rect.left) / rect.width));
+                        setSplitPosition(pos);
+                      }
+                    } else if (editorMode === 'crop') {
                       e.stopPropagation();
                       const rect = e.currentTarget.getBoundingClientRect();
                       const startX = e.clientX - rect.left;
@@ -2600,7 +3414,17 @@ export default function App() {
                     }
                   }}
                 onMouseMove={(e) => {
-                  if (editorMode === 'crop' && isDraggingCrop && cropStart) {
+                  if (editorMode === 'split' && isDraggingSplitLine) {
+                    e.stopPropagation();
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    if (splitOrientation === 'horizontal') {
+                      const pos = Math.max(0.05, Math.min(0.95, (e.clientY - rect.top) / rect.height));
+                      setSplitPosition(pos);
+                    } else {
+                      const pos = Math.max(0.05, Math.min(0.95, (e.clientX - rect.left) / rect.width));
+                      setSplitPosition(pos);
+                    }
+                  } else if (editorMode === 'crop' && isDraggingCrop && cropStart) {
                     e.stopPropagation();
                     const rect = e.currentTarget.getBoundingClientRect();
                     const currentX = e.clientX - rect.left;
@@ -2620,7 +3444,10 @@ export default function App() {
                   }
                 }}
                 onMouseUp={(e) => {
-                  if (editorMode === 'crop' && isDraggingCrop) {
+                  if (editorMode === 'split') {
+                    e.stopPropagation();
+                    setIsDraggingSplitLine(false);
+                  } else if (editorMode === 'crop' && isDraggingCrop) {
                     e.stopPropagation();
                     setIsDraggingCrop(false);
                     setCropStart(null);
@@ -2633,6 +3460,16 @@ export default function App() {
                     const clickX = (e.clientX - rect.left) / rect.width;
                     const clickY = (e.clientY - rect.top) / rect.height;
                     handleAddTextAnnotation(clickX, clickY);
+                  } else if (editorMode === 'split') {
+                    e.stopPropagation();
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    if (splitOrientation === 'horizontal') {
+                      const pos = Math.max(0.05, Math.min(0.95, (e.clientY - rect.top) / rect.height));
+                      setSplitPosition(pos);
+                    } else {
+                      const pos = Math.max(0.05, Math.min(0.95, (e.clientX - rect.left) / rect.width));
+                      setSplitPosition(pos);
+                    }
                   }
                 }}
               >
@@ -2871,13 +3708,137 @@ export default function App() {
                   </div>
                 )}
 
+                {/* Split Page Overlay */}
+                {editorMode === 'split' && (
+                  <div className="absolute inset-0 pointer-events-none z-30 select-none">
+                    {splitOrientation === 'horizontal' ? (
+                      <>
+                        {/* Shaded Top Region (Page 1) */}
+                        <div 
+                          className="absolute top-0 left-0 right-0 bg-emerald-500/10 border-b border-dashed border-emerald-400/60 flex flex-col justify-start p-3 transition-all pointer-events-none"
+                          style={{ height: `${splitPosition * 100}%` }}
+                        >
+                          <div className="self-start inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-slate-900/85 backdrop-blur-md text-emerald-300 font-mono text-[11px] font-bold shadow-md border border-emerald-500/30">
+                            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                            <span>PAGE 1: TOP HALF</span>
+                            <span className="text-slate-400 font-normal">({Math.round(splitPosition * 100)}% height)</span>
+                          </div>
+                        </div>
+
+                        {/* Shaded Bottom Region (Page 2) */}
+                        <div 
+                          className="absolute left-0 right-0 bottom-0 bg-blue-500/10 border-t border-dashed border-blue-400/60 flex flex-col justify-end p-3 transition-all pointer-events-none"
+                          style={{ top: `${splitPosition * 100}%` }}
+                        >
+                          <div className="self-start inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-slate-900/85 backdrop-blur-md text-blue-300 font-mono text-[11px] font-bold shadow-md border border-blue-500/30">
+                            <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
+                            <span>PAGE 2: BOTTOM HALF</span>
+                            <span className="text-slate-400 font-normal">({Math.round((1 - splitPosition) * 100)}% height)</span>
+                          </div>
+                        </div>
+
+                        {/* Horizontal Cut Line */}
+                        <div 
+                          className="absolute left-0 right-0 -translate-y-1/2 flex items-center justify-between z-40 pointer-events-auto cursor-row-resize group"
+                          style={{ top: `${splitPosition * 100}%` }}
+                          onMouseDown={(e) => {
+                            e.stopPropagation();
+                            setIsDraggingSplitLine(true);
+                          }}
+                        >
+                          {/* Left handle */}
+                          <div className="bg-rose-600 hover:bg-rose-500 text-white p-1.5 rounded-full shadow-lg border-2 border-white -translate-x-3 transition-transform group-hover:scale-110">
+                            <Scissors className="h-3.5 w-3.5" />
+                          </div>
+
+                          {/* Dashed line */}
+                          <div className="flex-1 h-[2px] bg-rose-500/90 shadow-sm border-t-2 border-dashed border-rose-500" />
+
+                          {/* Center badge */}
+                          <div className="mx-2 bg-rose-600 hover:bg-rose-700 text-white px-3 py-1 rounded-full shadow-lg text-[10px] font-mono font-bold flex items-center gap-1.5 shrink-0 border border-rose-400 transition-colors">
+                            <Scissors className="h-3 w-3" />
+                            <span>CUT LINE: {Math.round(splitPosition * 100)}% ({Math.round(splitPosition * activeEditorPage.height)} pt)</span>
+                            <span className="text-rose-200 text-[9px] font-sans font-normal ml-1">Drag or click to move</span>
+                          </div>
+
+                          {/* Dashed line */}
+                          <div className="flex-1 h-[2px] bg-rose-500/90 shadow-sm border-t-2 border-dashed border-rose-500" />
+
+                          {/* Right handle */}
+                          <div className="bg-rose-600 hover:bg-rose-500 text-white p-1.5 rounded-full shadow-lg border-2 border-white translate-x-3 transition-transform group-hover:scale-110">
+                            <Scissors className="h-3.5 w-3.5 transform -scale-x-100" />
+                          </div>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        {/* Shaded Left Region (Page 1) */}
+                        <div 
+                          className="absolute top-0 left-0 bottom-0 bg-emerald-500/10 border-r border-dashed border-emerald-400/60 flex flex-col justify-start p-3 transition-all pointer-events-none"
+                          style={{ width: `${splitPosition * 100}%` }}
+                        >
+                          <div className="self-start inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-slate-900/85 backdrop-blur-md text-emerald-300 font-mono text-[11px] font-bold shadow-md border border-emerald-500/30">
+                            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                            <span>PAGE 1: LEFT</span>
+                            <span className="text-slate-400 font-normal">({Math.round(splitPosition * 100)}%)</span>
+                          </div>
+                        </div>
+
+                        {/* Shaded Right Region (Page 2) */}
+                        <div 
+                          className="absolute top-0 right-0 bottom-0 bg-blue-500/10 border-l border-dashed border-blue-400/60 flex flex-col justify-start items-end p-3 transition-all pointer-events-none"
+                          style={{ left: `${splitPosition * 100}%` }}
+                        >
+                          <div className="self-end inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-slate-900/85 backdrop-blur-md text-blue-300 font-mono text-[11px] font-bold shadow-md border border-blue-500/30">
+                            <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
+                            <span>PAGE 2: RIGHT</span>
+                            <span className="text-slate-400 font-normal">({Math.round((1 - splitPosition) * 100)}%)</span>
+                          </div>
+                        </div>
+
+                        {/* Vertical Cut Line */}
+                        <div 
+                          className="absolute top-0 bottom-0 -translate-x-1/2 flex flex-col items-center justify-between z-40 pointer-events-auto cursor-col-resize group"
+                          style={{ left: `${splitPosition * 100}%` }}
+                          onMouseDown={(e) => {
+                            e.stopPropagation();
+                            setIsDraggingSplitLine(true);
+                          }}
+                        >
+                          {/* Top handle */}
+                          <div className="bg-rose-600 hover:bg-rose-500 text-white p-1.5 rounded-full shadow-lg border-2 border-white -translate-y-3 transition-transform group-hover:scale-110">
+                            <Scissors className="h-3.5 w-3.5 rotate-90" />
+                          </div>
+
+                          {/* Dashed line */}
+                          <div className="flex-1 w-[2px] bg-rose-500/90 shadow-sm border-l-2 border-dashed border-rose-500" />
+
+                          {/* Center badge */}
+                          <div className="my-2 bg-rose-600 hover:bg-rose-700 text-white px-3 py-1 rounded-full shadow-lg text-[10px] font-mono font-bold flex items-center gap-1.5 shrink-0 border border-rose-400 transition-colors">
+                            <Scissors className="h-3 w-3" />
+                            <span>CUT: {Math.round(splitPosition * 100)}% ({Math.round(splitPosition * activeEditorPage.width)} pt)</span>
+                          </div>
+
+                          {/* Dashed line */}
+                          <div className="flex-1 w-[2px] bg-rose-500/90 shadow-sm border-l-2 border-dashed border-rose-500" />
+
+                          {/* Bottom handle */}
+                          <div className="bg-rose-600 hover:bg-rose-500 text-white p-1.5 rounded-full shadow-lg border-2 border-white translate-y-3 transition-transform group-hover:scale-110">
+                            <Scissors className="h-3.5 w-3.5 -rotate-90" />
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+
                 {/* Text Annotations Overlays */}
                 {activeEditorPage.textAnnotations?.map((ann) => {
                   const isSelected = selectedAnnotationId === ann.id;
                   return (
                     <div
                       key={ann.id}
-                      className={`absolute ${editorMode === 'crop' ? 'pointer-events-none opacity-20' : 'pointer-events-auto'}`}
+                      className={`absolute ${(editorMode === 'crop' || editorMode === 'split') ? 'pointer-events-none opacity-20' : 'pointer-events-auto'}`}
                       style={{
                         left: `${ann.x * 100}%`,
                         top: `${ann.y * 100}%`,
@@ -3162,6 +4123,7 @@ export default function App() {
                         }}
                         autoFocus={ann.text === 'Click to type text...'}
                         onFocus={(e) => {
+                          pushEditorSnapshot();
                           if (e.target.value === 'Click to type text...') {
                             e.target.select();
                           }
@@ -3177,6 +4139,46 @@ export default function App() {
               {/* Sidebar Settings Panel */}
               <div className="w-full md:w-80 bg-slate-50 border-t md:border-t-0 md:border-l border-slate-200 flex flex-col h-full overflow-y-auto select-none p-4 shrink-0 text-slate-800">
                 
+                {/* 0. Session History & Quick Actions */}
+                <div className="mb-5 pb-4 border-b border-slate-200">
+                  <div className="flex items-center justify-between mb-2">
+                    <h5 className="text-[10px] text-slate-400 font-bold uppercase tracking-wider flex items-center gap-1.5">
+                      <Undo2 className="h-3 w-3 text-slate-500" />
+                      <span>Changes & Revert</span>
+                    </h5>
+                    {editorHistory.length > 0 ? (
+                      <span className="text-[9px] bg-blue-100 text-blue-700 font-bold px-1.5 py-0.5 rounded font-mono">
+                        {editorHistory.length} unsaved
+                      </span>
+                    ) : (
+                      <span className="text-[9px] text-slate-400 font-mono">
+                        No changes
+                      </span>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={handleEditorRevertLastChange}
+                      disabled={editorHistory.length === 0}
+                      className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 text-xs bg-white hover:bg-slate-100 disabled:opacity-40 disabled:hover:bg-white text-slate-700 disabled:text-slate-400 border border-slate-300 disabled:border-slate-200 rounded font-bold uppercase tracking-wider cursor-pointer disabled:cursor-not-allowed shadow-2xs"
+                      title="Revert last change (Undo) - Ctrl+Z"
+                    >
+                      <Undo2 className="h-3 w-3 text-slate-600" />
+                      <span>Revert</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleEditorCancel}
+                      className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 text-xs bg-white hover:bg-rose-50 text-slate-700 hover:text-rose-700 border border-slate-300 hover:border-rose-300 rounded font-bold uppercase tracking-wider cursor-pointer shadow-2xs"
+                      title="Reject changes and exit without applying (Esc)"
+                    >
+                      <X className="h-3 w-3 text-rose-500" />
+                      <span>Cancel</span>
+                    </button>
+                  </div>
+                </div>
+
                 {/* 1. Zoom Controls */}
                 <div className="mb-6 pb-5 border-b border-slate-200">
                   <h5 className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-2.5 flex items-center gap-1.5">
@@ -3216,13 +4218,203 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* 2. Page Border Controls */}
-                <div className="mb-6 pb-5 border-b border-slate-200">
-                  <div className="flex items-center justify-between mb-2.5">
-                    <h5 className="text-[10px] text-slate-400 font-bold uppercase tracking-wider flex items-center gap-1.5">
-                      <Sliders className="h-3 w-3 text-slate-500" />
-                      <span>Page Border</span>
-                    </h5>
+                {editorMode === 'split' ? (
+                  <div className="flex-1 flex flex-col space-y-4 pb-6 min-h-0 overflow-y-auto">
+                    {/* Header info */}
+                    <div className="p-3 bg-rose-50/80 border border-rose-200/80 rounded-lg">
+                      <div className="flex items-center gap-2 text-rose-950 font-bold text-xs">
+                        <Scissors className="h-4 w-4 text-rose-600 shrink-0" />
+                        <span>SPLIT PAGE INTO 2 HALVES</span>
+                      </div>
+                      <p className="text-[11px] text-rose-900/80 mt-1 leading-relaxed">
+                        Cuts this page along the selected line and inserts 2 separate pages in the document. Both pages have the exact same size as the source page (<span className="font-mono font-semibold">{Math.round(activeEditorPage.width)} × {Math.round(activeEditorPage.height)} pt</span>).
+                      </p>
+                    </div>
+
+                    {/* Cut Direction */}
+                    <div>
+                      <span className="text-[10px] text-slate-500 font-bold uppercase block mb-1.5">Cut Direction</span>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setSplitOrientation('horizontal')}
+                          className={`px-3 py-2 text-xs font-bold rounded border transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                            splitOrientation === 'horizontal'
+                              ? 'bg-rose-600 text-white border-rose-600 shadow-sm'
+                              : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                          }`}
+                        >
+                          <Rows2 className="h-4 w-4" />
+                          <span>Top & Bottom</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSplitOrientation('vertical')}
+                          className={`px-3 py-2 text-xs font-bold rounded border transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                            splitOrientation === 'vertical'
+                              ? 'bg-rose-600 text-white border-rose-600 shadow-sm'
+                              : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                          }`}
+                        >
+                          <Columns2 className="h-4 w-4" />
+                          <span>Left & Right</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Cut Position Slider & Presets */}
+                    <div>
+                      <div className="flex justify-between items-center text-[10px] font-bold uppercase mb-1.5">
+                        <span className="text-slate-500">Cut Position</span>
+                        <span className="text-rose-600 font-mono font-bold text-xs bg-rose-50 px-2 py-0.5 rounded border border-rose-200">
+                          {Math.round(splitPosition * 100)}% ({Math.round(splitPosition * (splitOrientation === 'horizontal' ? activeEditorPage.height : activeEditorPage.width))} pt)
+                        </span>
+                      </div>
+
+                      {/* Presets */}
+                      <div className="grid grid-cols-3 gap-1.5 mb-2">
+                        {[
+                          { label: '33% (1/3)', val: 0.33 },
+                          { label: '50% (Half)', val: 0.5 },
+                          { label: '67% (2/3)', val: 0.67 }
+                        ].map(preset => (
+                          <button
+                            key={preset.label}
+                            type="button"
+                            onClick={() => setSplitPosition(preset.val)}
+                            className={`py-1 text-[10px] font-mono font-bold rounded border transition cursor-pointer ${
+                              Math.abs(splitPosition - preset.val) < 0.02
+                                ? 'bg-rose-50 border-rose-300 text-rose-700 shadow-2xs font-extrabold'
+                                : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                            }`}
+                          >
+                            {preset.label}
+                          </button>
+                        ))}
+                      </div>
+
+                      <input 
+                        type="range"
+                        min="5"
+                        max="95"
+                        step="1"
+                        value={Math.round(splitPosition * 100)}
+                        onChange={(e) => setSplitPosition(parseInt(e.target.value) / 100)}
+                        className="w-full accent-rose-600 h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer"
+                      />
+                      <p className="text-[10px] text-slate-400 mt-1 italic">
+                        Tip: Drag the red cut line or click on the page canvas to position.
+                      </p>
+                    </div>
+
+                    {/* Placement on New Pages */}
+                    <div>
+                      <span className="text-[10px] text-slate-500 font-bold uppercase block mb-1.5">Placement on New Pages</span>
+                      <div className="space-y-1.5">
+                        {[
+                          {
+                            id: 'fit' as const,
+                            title: 'Fit to Page (Recommended)',
+                            desc: 'Scales and centers each half to comfortably fill the full page size.'
+                          },
+                          {
+                            id: 'align-top' as const,
+                            title: splitOrientation === 'horizontal' ? 'Align to Top (Original Scale)' : 'Align to Left (Original Scale)',
+                            desc: 'Keeps 100% original scale, positioned at top/left edge.'
+                          },
+                          {
+                            id: 'original' as const,
+                            title: 'Original Coordinates',
+                            desc: 'Preserves exact coordinates from the original page with remaining area blank.'
+                          }
+                        ].map(opt => (
+                          <label
+                            key={opt.id}
+                            onClick={() => setSplitPlacement(opt.id)}
+                            className={`block p-2.5 rounded-lg border cursor-pointer transition ${
+                              splitPlacement === opt.id
+                                ? 'bg-blue-50/70 border-blue-300 ring-1 ring-blue-400'
+                                : 'bg-white border-slate-200 hover:bg-slate-50/80'
+                            }`}
+                          >
+                            <div className="flex items-start gap-2">
+                              <input
+                                type="radio"
+                                name="splitPlacement"
+                                checked={splitPlacement === opt.id}
+                                onChange={() => setSplitPlacement(opt.id)}
+                                className="mt-0.5 accent-blue-600"
+                              />
+                              <div>
+                                <span className="text-xs font-bold text-slate-800 block">{opt.title}</span>
+                                <span className="text-[10px] text-slate-500 leading-tight block mt-0.5">{opt.desc}</span>
+                              </div>
+                            </div>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Insertion options */}
+                    <div className="pt-2 border-t border-slate-200">
+                      <label className="flex items-start gap-2 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={keepOriginalOnSplit}
+                          onChange={(e) => setKeepOriginalOnSplit(e.target.checked)}
+                          className="mt-0.5 rounded accent-blue-600"
+                        />
+                        <span className="text-[11px] text-slate-700 font-medium">
+                          Keep original unsplit page in document (insert split halves after original)
+                        </span>
+                      </label>
+                    </div>
+
+                    {/* Output summary card */}
+                    <div className="p-3 bg-slate-100 rounded-lg border border-slate-200 space-y-1.5 text-[11px]">
+                      <span className="text-[10px] text-slate-500 font-bold uppercase block tracking-wider">Output Summary</span>
+                      <div className="flex items-center justify-between text-slate-700 bg-white p-2 rounded border border-slate-200">
+                        <span className="font-semibold flex items-center gap-1.5 text-emerald-700">
+                          <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                          Page 1: {splitOrientation === 'horizontal' ? 'Top' : 'Left'} Half ({Math.round(splitPosition * 100)}%)
+                        </span>
+                        <span className="font-mono text-[10px] text-slate-500">
+                          {Math.round(activeEditorPage.width)} × {Math.round(activeEditorPage.height)} pt
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between text-slate-700 bg-white p-2 rounded border border-slate-200">
+                        <span className="font-semibold flex items-center gap-1.5 text-blue-700">
+                          <span className="w-2 h-2 rounded-full bg-blue-500" />
+                          Page 2: {splitOrientation === 'horizontal' ? 'Bottom' : 'Right'} Half ({Math.round((1 - splitPosition) * 100)}%)
+                        </span>
+                        <span className="font-mono text-[10px] text-slate-500">
+                          {Math.round(activeEditorPage.width)} × {Math.round(activeEditorPage.height)} pt
+                        </span>
+                      </div>
+                      <p className="text-[10px] text-slate-500 mt-1">
+                        Both output pages match original dimensions: <span className="font-mono font-bold text-slate-700">{Math.round(activeEditorPage.width)} × {Math.round(activeEditorPage.height)} pt</span>
+                      </p>
+                    </div>
+
+                    {/* Action Button */}
+                    <button
+                      type="button"
+                      onClick={handleExecuteSplitPage}
+                      className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 px-4 rounded text-xs uppercase tracking-wider transition shadow-md hover:shadow-lg cursor-pointer flex items-center justify-center gap-2 active:scale-98"
+                    >
+                      <Scissors className="h-4 w-4" />
+                      <span>Split into 2 Pages</span>
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    {/* 2. Page Border Controls */}
+                    <div className="mb-6 pb-5 border-b border-slate-200">
+                      <div className="flex items-center justify-between mb-2.5">
+                        <h5 className="text-[10px] text-slate-400 font-bold uppercase tracking-wider flex items-center gap-1.5">
+                          <Sliders className="h-3 w-3 text-slate-500" />
+                          <span>Page Border</span>
+                        </h5>
                     <label className="relative inline-flex items-center cursor-pointer select-none">
                       <input 
                         type="checkbox" 
@@ -3570,19 +4762,59 @@ export default function App() {
                     );
                   })()}
                 </div>
+                  </>
+                )}
 
               </div>
             </div>
 
             {/* Modal Footer Controls */}
-            <div className="p-4 border-t border-slate-150 flex items-center justify-between shrink-0 bg-slate-50">
-              <div className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">
-                Editing: <span className="text-slate-700 truncate max-w-[200px] inline-block align-bottom font-mono lowercase tracking-normal">
-                  {activeEditorPage.sourceFileId === 'blank' ? 'Blank Page' : sourceFiles[activeEditorPage.sourceFileId]?.name}
-                </span>
+            <div className="p-4 border-t border-slate-150 flex flex-col sm:flex-row sm:items-center justify-between shrink-0 bg-slate-50 gap-3">
+              <div className="flex flex-wrap items-center gap-4 sm:gap-6">
+                <div className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">
+                  Editing: <span className="text-slate-700 truncate max-w-[200px] inline-block align-bottom font-mono lowercase tracking-normal">
+                    {activeEditorPage.sourceFileId === 'blank' ? 'Blank Page' : sourceFiles[activeEditorPage.sourceFileId]?.name}
+                  </span>
+                </div>
+                <div className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">
+                  Total annotations: <span className="text-slate-700 font-mono">{activeEditorPage.textAnnotations?.length || 0}</span>
+                </div>
+                {editorHistory.length > 0 && (
+                  <span className="text-[10px] text-blue-700 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded font-bold uppercase font-mono">
+                    {editorHistory.length} unsaved change{editorHistory.length > 1 ? 's' : ''}
+                  </span>
+                )}
               </div>
-              <div className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">
-                Total annotations: <span className="text-slate-700 font-mono">{activeEditorPage.textAnnotations?.length || 0}</span>
+
+              <div className="flex items-center space-x-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={handleEditorRevertLastChange}
+                  disabled={editorHistory.length === 0}
+                  className="px-3 py-1.5 text-xs bg-white hover:bg-slate-100 disabled:opacity-40 disabled:hover:bg-white text-slate-700 disabled:text-slate-400 border border-slate-300 disabled:border-slate-200 rounded font-bold uppercase tracking-wider cursor-pointer disabled:cursor-not-allowed flex items-center gap-1 shadow-2xs"
+                  title="Revert last change (Undo) - Ctrl+Z"
+                >
+                  <Undo2 className="h-3 w-3 text-slate-600" />
+                  <span>Undo</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleEditorCancel}
+                  className="px-3.5 py-1.5 text-xs bg-white hover:bg-rose-50 text-slate-700 hover:text-rose-700 border border-slate-300 hover:border-rose-300 rounded font-bold uppercase tracking-wider cursor-pointer flex items-center gap-1 shadow-2xs"
+                  title="Reject changes and exit without applying (Esc)"
+                >
+                  <X className="h-3 w-3 text-rose-500" />
+                  <span>Cancel</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleEditorApply}
+                  className="px-4 py-1.5 text-xs bg-blue-600 hover:bg-blue-700 text-white rounded font-bold uppercase tracking-wider cursor-pointer shadow-xs flex items-center gap-1 font-bold"
+                  title="Apply changes and return to document"
+                >
+                  <Check className="h-3 w-3" />
+                  <span>Apply & Close</span>
+                </button>
               </div>
             </div>
 

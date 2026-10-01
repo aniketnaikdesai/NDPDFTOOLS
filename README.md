@@ -31,10 +31,12 @@
     - **Remove Hyperlinks & Annotations**: Clean interactive links and web URI actions.
   - Real-time estimated file size reduction preview before exporting.
 - ✂️ **Visual Cropping**: Precision canvas-based cropping tool to eliminate unnecessary headers, footers, or margins from any page.
+- ✂️ **Interactive Page Splitting**: Cut any page into two halves (e.g., top and bottom, or left and right) along a customizable cut line. Insert both halves as separate pages in the document of the exact same size as the source page, with smart layout modes (Fit to Page, Align to Top/Left, or Original Coordinates).
+- 🏷️ **Batch Rename & Export Labels**: Bulk-rename export filenames for all selected pages at once using a customizable naming pattern (e.g., `Doc-001`, `Invoice_01`) with configurable prefixes, start numbers, digit padding, and live filename previews.
 - ✍️ **Text & Note Annotations**: Add text overlays, notes, or signatures to pages with customizable font size, alignment, and color choices.
 - 🖼️ **Multi-Format Export Options**:
   - Export as a single compiled PDF.
-  - Export pages as high-resolution PNG or JPEG images.
+  - Export pages as high-resolution PNG or JPEG images using your custom batch-renamed labels.
   - Bulk export images packaged in a `.zip` archive.
 - ↩️ **Undo/Redo History**: Comprehensive step-by-step editing history to easily revert changes.
 
@@ -56,12 +58,26 @@
 - Use the **Crop** tab to adjust crop bounds and trim margins.
 - Use the **Annotate** tab to place text notes on the page.
 
-### 4. Configure Optimization & Compression
+### 4. Split Pages into Two Halves
+- Click **Split** directly on any page card, or switch to the **Split Page** tab inside the editor.
+- Select your cut direction: **Horizontal** (Top & Bottom halves) or **Vertical** (Left & Right halves).
+- Drag the cut line on the page canvas or choose a preset (`33%`, `50%`, `67%`).
+- Choose how the halves are placed on the new pages: **Fit to Page** (scaled & centered), **Align to Top/Left**, or **Keep Original Position**.
+- Click **Split into 2 Pages** to insert both halves as separate pages of the original size in your document.
+
+### 5. Batch Rename Export Labels
+- Select one or more pages using the selection checkboxes (or click **Select All**).
+- Click **Batch Rename** in the bulk actions toolbar.
+- Customize your prefix (e.g. `Doc-`, `Page-`, `Invoice_`), starting number, and padding (`001`, `01`, `1`).
+- Check the real-time live preview list, then click **Apply**.
+- Exported images or ZIP archives will automatically use your custom labels.
+
+### 6. Configure Optimization & Compression
 - Expand the **Advanced Data Stripping & DPI** panel on the sidebar.
 - Choose your target DPI (e.g., 150 DPI for web/email attachments).
 - Toggle options to strip metadata, remove unused fonts, or remove hyperlinks for maximum space savings.
 
-### 5. Process & Save
+### 7. Process & Save
 - Select your desired **Export Format** (`PDF`, `PNG`, or `JPEG`).
 - Review the **Expected Outcome** size estimation.
 - Click **Process & Save** to compile and download your processed document locally.

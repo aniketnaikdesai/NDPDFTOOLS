@@ -1,0 +1,6 @@
+{
+  "summary":  "Implementation plan for the Batch Rename feature in the selection toolbar, allowing users to rename exported file labels for all selected pages using custom prefix, start number, and padding presets with live preview and page card badge display.",
+  "updatedAt":  "2026-10-01T19:03:28.630124557Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}
