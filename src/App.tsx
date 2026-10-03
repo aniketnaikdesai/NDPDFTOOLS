@@ -42,11 +42,15 @@ import {
   Tag,
   FilePenLine,
   Hash,
-  ListOrdered
+  ListOrdered,
+  FileSpreadsheet,
+  FilePlus
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { PDFPageItem, SourceFile, CompressionSettings, CompressionPreset, CropArea } from './types';
 import { loadPdfPages, renderPageThumbnail, compilePdf, exportPageToImage } from './pdfUtils';
+import { DocumentConverterModal } from './components/DocumentConverterModal';
+import { NewPdfModal } from './components/NewPdfModal';
 import JSZip from 'jszip';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 
@@ -174,6 +178,11 @@ export default function App() {
   const [batchSuffix, setBatchSuffix] = useState('');
   const [batchRenameToast, setBatchRenameToast] = useState<string | null>(null);
 
+  // Document Converter & Blank PDF Modal States
+  const [isDocumentConverterOpen, setIsDocumentConverterOpen] = useState(false);
+  const [isNewPdfModalOpen, setIsNewPdfModalOpen] = useState(false);
+  const [conversionToast, setConversionToast] = useState<string | null>(null);
+
   // Auto-dismiss batch rename toast
   useEffect(() => {
     if (batchRenameToast) {
@@ -181,6 +190,14 @@ export default function App() {
       return () => clearTimeout(timer);
     }
   }, [batchRenameToast]);
+
+  // Auto-dismiss conversion toast
+  useEffect(() => {
+    if (conversionToast) {
+      const timer = setTimeout(() => setConversionToast(null), 4500);
+      return () => clearTimeout(timer);
+    }
+  }, [conversionToast]);
 
   // Merge only selected pages option
   const [mergeOnlySelected, setMergeOnlySelected] = useState(false);
@@ -389,6 +406,75 @@ export default function App() {
     } catch (err) {
       console.error(err);
       setErrorMsg('Failed to merge PDF. The file may be invalid or encrypted.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Handle PDF generated from Word, Excel, or Images conversion
+  const handleConvertedPdfReady = async (
+    pdfBytes: Uint8Array,
+    fileName: string,
+    asNewDocument: boolean
+  ) => {
+    setIsLoading(true);
+    setLoadingProgress(15);
+    setErrorMsg(null);
+    setCompiledPdf(null);
+
+    try {
+      const file = new File([pdfBytes], fileName, { type: 'application/pdf' });
+      const sourceFileId = `file-${Date.now()}`;
+      const { sourceFile, pages: newPages } = await loadPdfPages(
+        file,
+        sourceFileId,
+        (progress) => setLoadingProgress(progress)
+      );
+
+      if (asNewDocument || pages.length === 0) {
+        setSourceFiles({ [sourceFileId]: sourceFile });
+        setPages(newPages);
+        setHistory([]);
+        setSelectedPageIds([]);
+        setConversionToast(`Created new document with ${newPages.length} page${newPages.length > 1 ? 's' : ''}`);
+      } else {
+        saveToHistory(pages);
+        setSourceFiles(prev => ({ ...prev, [sourceFileId]: sourceFile }));
+        setPages(prev => [...prev, ...newPages]);
+        setConversionToast(`Appended ${newPages.length} page${newPages.length > 1 ? 's' : ''} from ${fileName}`);
+      }
+    } catch (err: any) {
+      console.error('Failed to load converted PDF pages:', err);
+      setErrorMsg(`Failed to load converted document: ${err.message || 'Unknown error'}`);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Handle Blank PDF created from NewPdfModal
+  const handleNewPdfCreated = async (pdfBytes: Uint8Array, fileName: string) => {
+    setIsLoading(true);
+    setLoadingProgress(20);
+    setErrorMsg(null);
+    setCompiledPdf(null);
+
+    try {
+      const file = new File([pdfBytes], fileName, { type: 'application/pdf' });
+      const sourceFileId = `file-${Date.now()}`;
+      const { sourceFile, pages: newPages } = await loadPdfPages(
+        file,
+        sourceFileId,
+        (progress) => setLoadingProgress(progress)
+      );
+
+      setSourceFiles({ [sourceFileId]: sourceFile });
+      setPages(newPages);
+      setHistory([]);
+      setSelectedPageIds([]);
+      setConversionToast(`Created ${fileName} (${newPages.length} blank page${newPages.length > 1 ? 's' : ''})`);
+    } catch (err: any) {
+      console.error('Failed to create new PDF:', err);
+      setErrorMsg(`Failed to create new PDF: ${err.message || 'Unknown error'}`);
     } finally {
       setIsLoading(false);
     }
@@ -1697,6 +1783,24 @@ export default function App() {
           {pages.length > 0 && <div className="h-6 w-[1px] bg-slate-200 hidden lg:block"></div>}
 
           <div className="flex items-center gap-2">
+            <button
+              onClick={() => setIsNewPdfModalOpen(true)}
+              className="text-slate-700 hover:text-blue-700 hover:bg-blue-50 px-3 py-1.5 rounded text-xs font-bold uppercase tracking-wider transition-colors border border-slate-200 flex items-center gap-1.5 cursor-pointer shadow-2xs"
+              title="Create a new blank PDF or note document"
+            >
+              <FilePlus className="h-3.5 w-3.5 text-blue-600" />
+              <span>New PDF</span>
+            </button>
+
+            <button
+              onClick={() => setIsDocumentConverterOpen(true)}
+              className="text-slate-700 hover:text-emerald-700 hover:bg-emerald-50 px-3 py-1.5 rounded text-xs font-bold uppercase tracking-wider transition-colors border border-slate-200 flex items-center gap-1.5 cursor-pointer shadow-2xs"
+              title="Convert and add Word (.docx), Excel (.xlsx), or images"
+            >
+              <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600" />
+              <span>Add Documents</span>
+            </button>
+
             {pages.length > 0 && (
               <button
                 onClick={resetApp}
@@ -1750,7 +1854,7 @@ export default function App() {
                 onDragOver={handleDragOver}
                 onDrop={handleDrop}
                 onClick={() => fileInputRef.current?.click()}
-                className="bg-white border-2 border-dashed border-slate-200 hover:border-blue-500 rounded p-8 sm:p-12 text-center cursor-pointer transition-all duration-200 shadow-xs hover:shadow-sm flex flex-col items-center group relative overflow-hidden"
+                className="bg-white border-2 border-dashed border-slate-200 hover:border-blue-500 rounded p-8 sm:p-10 text-center cursor-pointer transition-all duration-200 shadow-xs hover:shadow-sm flex flex-col items-center group relative overflow-hidden"
               >
                 <input 
                   type="file" 
@@ -1760,39 +1864,85 @@ export default function App() {
                   accept="application/pdf"
                 />
 
-                <div className="bg-blue-50 text-blue-600 p-4 rounded mb-6 group-hover:scale-110 transition-transform duration-200">
-                  <FileUp className="h-10 w-10" />
+                <div className="bg-blue-50 text-blue-600 p-3.5 rounded mb-4 group-hover:scale-105 transition-transform duration-200">
+                  <FileUp className="h-8 w-8" />
                 </div>
 
-                <h3 className="text-lg font-display font-bold text-slate-800 uppercase tracking-tight mb-2">
-                  Select or Drag & Drop PDF
+                <h3 className="text-base font-display font-bold text-slate-800 uppercase tracking-tight mb-1.5">
+                  Select or Drag & Drop Existing PDF
                 </h3>
-                <p className="text-xs text-slate-400 font-bold uppercase tracking-wider mb-6">
-                  Supports multi-page documents & merges
+                <p className="text-xs text-slate-400 font-medium mb-4">
+                  Full editor for page reordering, cropping, annotations, splitting, and merging
                 </p>
 
                 <button 
                   type="button" 
-                  className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 px-6 rounded uppercase text-xs tracking-wider transition-colors shadow-xs cursor-pointer"
+                  className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-5 rounded uppercase text-xs tracking-wider transition-colors shadow-xs cursor-pointer"
                 >
                   Choose PDF File
                 </button>
               </div>
 
+              {/* Conversion & Blank Document Pipeline Cards */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 mt-4">
+                <div 
+                  onClick={() => setIsDocumentConverterOpen(true)}
+                  className="p-4 bg-white border border-slate-200 hover:border-emerald-500 rounded-lg shadow-xs hover:shadow-sm transition-all cursor-pointer flex flex-col justify-between group"
+                >
+                  <div>
+                    <div className="flex items-center gap-2 mb-1.5">
+                      <div className="p-1.5 bg-emerald-50 text-emerald-600 rounded">
+                        <FileSpreadsheet className="h-4 w-4" />
+                      </div>
+                      <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider">
+                        Convert Word, Excel & Images
+                      </h4>
+                    </div>
+                    <p className="text-[11px] text-slate-500 leading-relaxed">
+                      Convert .docx documents, .xlsx sheets with live pagination preview, or images directly to PDF pages.
+                    </p>
+                  </div>
+                  <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between text-xs text-emerald-700 font-bold">
+                    <span>Add Documents</span>
+                    <span className="group-hover:translate-x-0.5 transition-transform">→</span>
+                  </div>
+                </div>
+
+                <div 
+                  onClick={() => setIsNewPdfModalOpen(true)}
+                  className="p-4 bg-white border border-slate-200 hover:border-blue-500 rounded-lg shadow-xs hover:shadow-sm transition-all cursor-pointer flex flex-col justify-between group"
+                >
+                  <div>
+                    <div className="flex items-center gap-2 mb-1.5">
+                      <div className="p-1.5 bg-blue-50 text-blue-600 rounded">
+                        <FilePlus className="h-4 w-4" />
+                      </div>
+                      <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider">
+                        Create New Blank PDF
+                      </h4>
+                    </div>
+                    <p className="text-[11px] text-slate-500 leading-relaxed">
+                      Start from scratch with clean white canvas, notebook ruled lines, technical grid, or dot template pages.
+                    </p>
+                  </div>
+                  <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between text-xs text-blue-700 font-bold">
+                    <span>New Blank Document</span>
+                    <span className="group-hover:translate-x-0.5 transition-transform">→</span>
+                  </div>
+                </div>
+              </div>
+
               {/* Sample PDF Option */}
-              <div className="mt-8 text-center">
-                <p className="text-[10px] text-slate-400 uppercase tracking-widest font-bold mb-4">Or Instant Sandbox Demo</p>
+              <div className="mt-6 text-center">
+                <p className="text-[10px] text-slate-400 uppercase tracking-widest font-bold mb-3">Or Instant Sandbox Demo</p>
                 <button
                   onClick={handleUseSample}
                   disabled={isLoading}
-                  className="inline-flex items-center space-x-2 bg-slate-100 hover:bg-slate-200 text-slate-700 hover:text-slate-900 font-bold py-3 px-6 rounded border border-slate-200 transition-colors uppercase tracking-wider text-xs cursor-pointer disabled:opacity-50"
+                  className="inline-flex items-center space-x-2 bg-slate-100 hover:bg-slate-200 text-slate-700 hover:text-slate-900 font-bold py-2.5 px-5 rounded border border-slate-200 transition-colors uppercase tracking-wider text-xs cursor-pointer disabled:opacity-50"
                 >
                   <Sparkles className="h-4 w-4 text-amber-500" />
                   <span>Load Sample 3-Page PDF</span>
                 </button>
-                <p className="text-[11px] text-slate-400 mt-3 leading-relaxed">
-                  Generate a custom vector layout PDF in-memory to test splitting, rotation, merging, and compression immediately without uploading files.
-                </p>
               </div>
             </motion.div>
           </div>
@@ -1868,6 +2018,15 @@ export default function App() {
                       </>
                     )}
                   </div>
+
+                  <button
+                    onClick={() => setIsDocumentConverterOpen(true)}
+                    className="inline-flex items-center space-x-1.5 text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 px-3 py-2 rounded transition font-bold uppercase tracking-wider cursor-pointer shadow-2xs"
+                    title="Convert and add Word (.docx), Excel (.xlsx), or images to this document"
+                  >
+                    <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600" />
+                    <span>Add Documents</span>
+                  </button>
 
                   <button
                     onClick={() => addFileInputRef.current?.click()}
@@ -2864,6 +3023,43 @@ export default function App() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Document Conversion Success Toast Notification */}
+      <AnimatePresence>
+        {conversionToast && (
+          <motion.div
+            initial={{ opacity: 0, y: -20, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -20, scale: 0.95 }}
+            className="fixed top-20 left-1/2 -translate-x-1/2 z-50 bg-slate-900 text-white px-5 py-3 rounded-lg shadow-2xl border border-emerald-500/40 backdrop-blur-md flex items-center gap-3 text-xs font-semibold"
+          >
+            <CheckCircle className="h-4 w-4 text-emerald-400 shrink-0" />
+            <span>{conversionToast}</span>
+            <button
+              onClick={() => setConversionToast(null)}
+              className="ml-2 text-slate-400 hover:text-white cursor-pointer"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Document Converter Modal (Word, Excel, Images) */}
+      <DocumentConverterModal
+        isOpen={isDocumentConverterOpen}
+        onClose={() => setIsDocumentConverterOpen(false)}
+        hasExistingPages={pages.length > 0}
+        onConvertedPdfReady={handleConvertedPdfReady}
+      />
+
+      {/* New Blank PDF Modal */}
+      <NewPdfModal
+        isOpen={isNewPdfModalOpen}
+        onClose={() => setIsNewPdfModalOpen(false)}
+        onNewPdfCreated={handleNewPdfCreated}
+        onOpenDocumentConverter={() => setIsDocumentConverterOpen(true)}
+      />
 
       {/* Batch Rename Modal Dialog */}
       {isBatchRenameOpen && (

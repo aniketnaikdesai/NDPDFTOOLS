@@ -69,3 +69,38 @@ export interface CompressionSettings {
   removeUnusedFonts: boolean;
   removeHyperlinks: boolean;
 }
+
+export interface ExcelSheetInfo {
+  name: string;
+  rowCount: number;
+  colCount: number;
+  previewRows: (string | number)[][];
+}
+
+export interface ExcelConvertOptions {
+  selectedSheets: string[];
+  orientation: 'portrait' | 'landscape';
+  pageSize: 'letter' | 'a4';
+  fontSize?: number;
+  fitToWidth?: boolean;
+}
+
+export interface DocxConvertOptions {
+  pageSize: 'letter' | 'a4';
+  orientation: 'portrait' | 'landscape';
+}
+
+export interface ImageConvertOptions {
+  placement: 'fit' | 'fill' | 'original';
+  pageSize: 'letter' | 'a4';
+  orientation: 'auto' | 'portrait' | 'landscape';
+}
+
+export interface BlankPdfOptions {
+  pageCount: number;
+  pageSize: 'letter' | 'a4';
+  orientation: 'portrait' | 'landscape';
+  template: 'blank' | 'ruled' | 'grid' | 'dots';
+}
+
+
