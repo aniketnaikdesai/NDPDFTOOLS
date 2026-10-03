@@ -1,7 +1,7 @@
 import * as pdfjsLib from 'pdfjs-dist';
 // @ts-ignore
 import PDFWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?worker&inline';
-import { PDFDocument, degrees, PDFName, rgb, StandardFonts } from 'pdf-lib';
+import { PDFDocument, degrees, PDFName, rgb, StandardFonts, PDFFont } from 'pdf-lib';
 import { PDFPageItem, SourceFile, CompressionSettings, CropArea } from './types';
 
 // Set up the PDF.js worker
@@ -365,6 +365,56 @@ async function drawDecorations(page: any, destPdf: any, pageItem: PDFPageItem) {
 }
 
 /**
+ * Sanitizes arbitrary user text so that it can be safely encoded with standard PDF fonts (WinAnsi).
+ * Prevents "WinAnsi cannot encode ..." runtime exceptions for unicode symbols like checkmarks, emojis, etc.
+ */
+export function sanitizeTextForWinAnsi(text: string, font: PDFFont): string {
+  if (!text) return '';
+
+  const replacements: Record<string, string> = {
+    '\u2714': '[x]', // Heavy check mark ✔
+    '\u2713': '[x]', // Check mark ✓
+    '\u2717': '[ ]', // Ballot X ✗
+    '\u2718': '[ ]', // Heavy ballot X ✘
+    '\u2611': '[x]', // Ballot box with check ☑
+    '\u2610': '[ ]', // Ballot box ☐
+    '\u2605': '*',   // Black star ★
+    '\u2606': '*',   // White star ☆
+    '\u2192': '->',  // Rightwards arrow →
+    '\u2190': '<-',  // Leftwards arrow ←
+    '\u2194': '<->', // Left right arrow ↔
+    '\u21D2': '=>',  // Rightwards double arrow ⇒
+    '\u21D0': '<=',  // Leftwards double arrow ⇐
+    '\u2022': '•',   // Bullet • (supported in WinAnsi)
+    '\u201C': '"',   // Left double quotation mark “
+    '\u201D': '"',   // Right double quotation mark ”
+    '\u2018': "'",   // Left single quotation mark ‘
+    '\u2019': "'",   // Right single quotation mark ’
+    '\u2014': '—',   // Em dash — (supported in WinAnsi)
+    '\u2013': '–',   // En dash – (supported in WinAnsi)
+    '\u2026': '…',   // Horizontal ellipsis … (supported in WinAnsi)
+  };
+
+  let clean = text;
+  for (const [symbol, replacement] of Object.entries(replacements)) {
+    clean = clean.split(symbol).join(replacement);
+  }
+
+  // Filter any characters that WinAnsi cannot encode
+  let safeResult = '';
+  for (const char of clean) {
+    try {
+      font.encodeText(char);
+      safeResult += char;
+    } catch {
+      safeResult += ' ';
+    }
+  }
+
+  return safeResult;
+}
+
+/**
  * Draws text annotations on a given PDFPage.
  */
 async function drawAnnotations(page: any, destPdf: any, annotations?: any[]) {
@@ -374,13 +424,15 @@ async function drawAnnotations(page: any, destPdf: any, annotations?: any[]) {
   const height = page.getHeight();
   
   for (const ann of annotations) {
+    const safeText = sanitizeTextForWinAnsi(ann.text || '', helveticaFont);
+    
     // Coordinate conversion:
     // Screen top-left (0,0) relative ratio to PDF bottom-left (0,0)
     let pdfX = ann.x * width;
     const pdfY = (1 - ann.y) * height;
     
     // Calculate text width for alignment
-    const textWidth = helveticaFont.widthOfTextAtSize(ann.text || '', ann.fontSize);
+    const textWidth = helveticaFont.widthOfTextAtSize(safeText, ann.fontSize);
     const align = ann.alignment || 'center'; // Default to center for existing/new ones if not specified
     
     if (align === 'center') {
@@ -406,7 +458,7 @@ async function drawAnnotations(page: any, destPdf: any, annotations?: any[]) {
     
     // Draw text with a custom or black color
     const textRgb = ann.color ? (hexToRgb(ann.color) || { r: 0, g: 0, b: 0 }) : { r: 0, g: 0, b: 0 };
-    page.drawText(ann.text || '', {
+    page.drawText(safeText, {
       x: pdfX,
       y: pdfY - (ann.fontSize * 0.4), // Adjust baseline alignment to vertical center of text bounding box
       size: ann.fontSize,

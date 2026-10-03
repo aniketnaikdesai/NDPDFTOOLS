@@ -444,11 +444,11 @@ export default function App() {
         color: rgb(0.7, 0.8, 0.9),
       });
       const bulletPoints = [
-        '✔ High-fidelity PDF compression options',
-        '✔ Fast vector optimizations & metadata stripping',
-        '✔ Mobile-friendly drag, swap, & deletion controls',
-        '✔ Interactive multi-file merging system',
-        '✔ Real-time file size savings predictor',
+        '• High-fidelity PDF compression options',
+        '• Fast vector optimizations & metadata stripping',
+        '• Mobile-friendly drag, swap, & deletion controls',
+        '• Interactive multi-file merging system',
+        '• Real-time file size savings predictor',
       ];
       bulletPoints.forEach((bp, index) => {
         page1.drawText(bp, {
